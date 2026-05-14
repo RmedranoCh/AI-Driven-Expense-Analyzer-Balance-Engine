@@ -1,0 +1,10 @@
+streamlit
+pandas
+plotly
+sqlalchemy
+psycopg2-binary
+python-dotenv
+pypdf
+pytest
+groq
+openpyxl

@@ -1,0 +1,388 @@
+import streamlit as st
+import pandas as pd
+import pypdf
+import io
+import plotly.express as px
+from decimal import Decimal
+from datetime import datetime, timezone, date
+from app.ai.extractor import InvoiceExtractor
+from app.ai.classifier import ExpenseClassifier
+from app.database.session import get_session, Base, get_engine
+from app.database.models import DBGasto, DBGastoItem
+from sqlalchemy.orm import joinedload
+
+st.set_page_config(page_title="Analizador de Balances IA", layout="wide", page_icon="📊")
+
+@st.cache_resource
+def get_ai_tools():
+    return InvoiceExtractor(), ExpenseClassifier()
+
+class ExpenseDashboard:
+    def __init__(self):
+        self.extractor, self.classifier = get_ai_tools()
+        Base.metadata.create_all(bind=get_engine())
+        
+        if "topes_presupuesto" not in st.session_state:
+            st.session_state.topes_presupuesto = {cat: 1000.0 for cat in self.classifier.categorias_validas}
+
+    def render(self):
+        st.title("📊 Analizador Inteligente de Gastos y Balances")
+        
+        st.sidebar.header("📥 Cargar Comprobante")
+        uploaded_file = st.sidebar.file_uploader("Subir Factura Externa (PDF o Imagen)", type=["pdf", "png", "jpg", "jpeg"])
+        
+        if uploaded_file and st.sidebar.button("Procesar con IA"):
+            self._process_file(uploaded_file)
+
+        st.sidebar.markdown("---")
+        st.sidebar.header("🔍 Filtros de Balance")
+        
+        año_actual = datetime.now().year
+        fecha_inicio = st.sidebar.date_input("Fecha Inicio", date(año_actual, 1, 1))
+        fecha_fin = st.sidebar.date_input("Fecha Fin", date(año_actual, 12, 31))
+
+        if "pending_gasto" in st.session_state:
+            self._render_confirmation_step()
+        else:
+            self._render_budget_alerts()
+            st.markdown("---")
+            self._render_stats(fecha_inicio, fecha_fin)
+
+    def _process_file(self, file):
+        with st.spinner("La IA está analizando los conceptos del documento..."):
+            try:
+                if file.type == "application/pdf":
+                    reader = pypdf.PdfReader(file)
+                    text = "\n".join([p.extract_text() for p in reader.pages if p.extract_text()])
+                    raw_data = self.extractor.extract_from_text(text) if text.strip() else self.extractor.extract_from_image(file.getvalue(), "image/jpeg")
+                else:
+                    raw_data = self.extractor.extract_from_image(file.getvalue(), file.type)
+
+                descripciones = [it["descripcion"] for it in raw_data["items"]]
+                categorias_ia = self.classifier.classify_batch(descripciones)
+
+                items_procesados = []
+                total_calculado = Decimal("0.00")
+                
+                for i, it in enumerate(raw_data["items"]):
+                    subtotal = Decimal(str(it["cantidad"])) * Decimal(str(it["precio_unitario"]))
+                    total_calculado += subtotal
+                    
+                    items_procesados.append({
+                        "descripcion": it["descripcion"],
+                        "cantidad": float(it["cantidad"]),
+                        "precio_unitario": float(it["precio_unitario"]),
+                        "total_linea": float(subtotal),
+                        "categoria": categorias_ia[i] if i < len(categorias_ia) else "Otros"
+                    })
+                    
+                st.session_state.pending_gasto = {
+                    "proveedor": raw_data["proveedor"], 
+                    "items": items_procesados,
+                    "total_ia": float(total_calculado)
+                }
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error crítico de procesamiento: {e}")
+
+    def _render_confirmation_step(self):
+        st.warning("📋 **Verificación Requerida:** Revisa los datos del gasto extraídos por la IA.")
+        data = st.session_state.pending_gasto
+        
+        proveedor_editado = st.text_input("Proveedor", data["proveedor"])
+        
+        edited_df = st.data_editor(
+            pd.DataFrame(data["items"]), 
+            use_container_width=True, 
+            column_config={
+                "descripcion": st.column_config.TextColumn("Concepto/Descripción", required=True),
+                "cantidad": st.column_config.NumberColumn("Cantidad", min_value=0.0001, required=True),
+                "precio_unitario": st.column_config.NumberColumn("Precio U.", min_value=0.00, required=True),
+                "total_linea": st.column_config.NumberColumn("Total", disabled=True, format="$%.2f"),
+                "categoria": st.column_config.SelectboxColumn("Categoría", options=self.classifier.categorias_validas)
+            }
+        )
+
+        total_recalculado = sum(float(row["cantidad"]) * float(row["precio_unitario"]) for _, row in edited_df.iterrows())
+        total_original = data["total_ia"]
+        
+        st.markdown("---")
+        col_m1, col_m2 = st.columns(2)
+        col_m1.metric("Total Detectado por IA", f"${total_original:,.2f}")
+        col_m2.metric("Total de Tabla Actual", f"${total_recalculado:,.2f}", delta=f"{total_recalculado - total_original:,.2f}")
+        st.markdown("---")
+
+        col1, col2 = st.columns(2)
+        if col1.button("✅ Confirmar y Guardar"): 
+            self._final_save(proveedor_editado, edited_df, total_recalculado)
+        if col2.button("❌ Cancelar"): 
+            del st.session_state.pending_gasto
+            st.rerun()
+
+    def _final_save(self, proveedor, df_final, total_recalculado):
+        try:
+            timestamp = int(datetime.now(timezone.utc).timestamp())
+            with get_session() as db:
+                db_gasto = DBGasto(
+                    numero_comprobante=f"EXP-{timestamp}",
+                    proveedor=proveedor,
+                    total_gasto=float(total_recalculado)
+                )
+                db_gasto.items = [
+                    DBGastoItem(
+                        descripcion=str(row["descripcion"]),
+                        cantidad=float(row["cantidad"]),
+                        precio_unitario=float(row["precio_unitario"]),
+                        total_linea=float(row["cantidad"]) * float(row["precio_unitario"]),
+                        categoria=str(row["categoria"]),
+                        gasto=db_gasto
+                    ) for _, row in df_final.iterrows()
+                ]
+                db.add(db_gasto)
+                db.commit()
+
+            st.success("¡Gasto integrado al balance con éxito!")
+            del st.session_state.pending_gasto
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error al guardar: {e}")
+
+    def _render_budget_alerts(self):
+        st.subheader("🚨 Control de Presupuestos Mensuales")
+        
+        with get_session() as db:
+            items_query = db.query(DBGastoItem).options(joinedload(DBGastoItem.gasto)).all()
+            
+        if not items_query:
+            return
+
+        mes_actual_str = datetime.now().strftime("%Y-%m")
+        datos_completo = [
+            {
+                "Total ($)": float(it.total_linea),
+                "Categoría": it.categoria,
+                "Mes": it.gasto.fecha.strftime("%Y-%m")
+            } for it in items_query
+        ]
+        df_all = pd.DataFrame(datos_completo)
+        df_mes_actual = df_all[df_all["Mes"] == mes_actual_str]
+
+        col_config, col_alertas = st.columns([1, 2])
+        
+        with col_config:
+            st.markdown(f"**Ajustar topes mensuales ({mes_actual_str}):**")
+            df_topes_input = pd.DataFrame([
+                {"Categoría": cat, "Tope Mensual ($)": float(st.session_state.topes_presupuesto[cat])}
+                for cat in self.classifier.categorias_validas
+            ])
+            
+            edited_topes_df = st.data_editor(
+                df_topes_input, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Categoría": st.column_config.TextColumn(
+                        "Categoría", 
+                        disabled=True
+                    ),
+                    "Tope Mensual ($)": st.column_config.NumberColumn(
+                        "Tope Mensual ($)", 
+                        min_value=0.0, 
+                        format="$%.2f",
+                        step=10.0
+                    )
+                }
+            )
+            
+            for _, row in edited_topes_df.iterrows():
+                st.session_state.topes_presupuesto[row["Categoría"]] = float(row["Tope Mensual ($)"])
+
+        with col_alertas:
+            st.markdown("**Estado de Consumo por Rubro:**")
+            
+            if not df_mes_actual.empty:
+                df_gasto_cat = df_mes_actual.groupby("Categoría")["Total ($)"].sum().reset_index()
+            else:
+                df_gasto_cat = pd.DataFrame(columns=["Categoría", "Total ($)"])
+
+            alertas_lista = []
+            for cat in self.classifier.categorias_validas:
+                gasto_real = float(df_gasto_cat[df_gasto_cat["Categoría"] == cat]["Total ($)"].sum())
+                tope = float(st.session_state.topes_presupuesto[cat])
+                porcentaje = (gasto_real / tope * 100) if tope > 0 else 0
+                
+                alertas_lista.append({
+                    "Categoría": cat,
+                    "Consumido Real ($)": gasto_real,
+                    "Límite Configurado ($)": tope,
+                    "Porcentaje de Uso": f"{porcentaje:.1f}%",
+                    "Excedido": gasto_real > tope
+                })
+            
+            df_alertas_render = pd.DataFrame(alertas_lista)
+            
+            def estilizar_tabla_presupuesto(row):
+                if row["Excedido"]:
+                    return ['background-color: #ffcccc; color: #b71c1c; font-weight: bold;'] * len(row)
+                return [''] * len(row)
+
+            df_mostrar = df_alertas_render.drop(columns=["Excedido"])
+
+            st.dataframe(
+                df_alertas_render.style.apply(estilizar_tabla_presupuesto, axis=1),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Consumido Real ($)": st.column_config.NumberColumn(format="$%.2f"),
+                    "Límite Configurado ($)": st.column_config.NumberColumn(format="$%.2f")
+                }
+            )
+
+    def _render_stats(self, start_date, end_date):
+        with get_session() as db:
+            items_query = db.query(DBGastoItem).options(joinedload(DBGastoItem.gasto)).all()
+            gastos_cabecera = db.query(DBGasto).all()
+            
+            if not items_query:
+                st.info("Sin registros de gastos cargados en el sistema.")
+                return
+
+            datos_tabla = [
+                {
+                    "ID Comprobante": it.gasto.numero_comprobante,
+                    "Proveedor": it.gasto.proveedor,
+                    "Fecha": it.gasto.fecha.strftime("%Y-%m-%d"),
+                    "Concepto": it.descripcion,
+                    "Cantidad": float(it.cantidad),
+                    "Precio U. ($)": float(it.precio_unitario),
+                    "Total ($)": float(it.total_linea),
+                    "Categoría": it.categoria
+                } for it in items_query
+            ]
+            
+            datos_cabecera_lista = [
+                {
+                    "id_db": g.id,
+                    "Comprobante": g.numero_comprobante,
+                    "Proveedor": g.proveedor,
+                    "Fecha": g.fecha.strftime("%Y-%m-%d %H:%M"),
+                    "Total Gasto ($)": float(g.total_gasto)
+                } for g in gastos_cabecera
+            ]
+            
+        df_completo = pd.DataFrame(datos_tabla)
+        df_completo["Fecha_DT"] = pd.to_datetime(df_completo["Fecha"]).dt.date
+        df_base = df_completo[(df_completo["Fecha_DT"] >= start_date) & (df_completo["Fecha_DT"] <= end_date)].copy()
+        
+        if df_base.empty:
+            st.warning(f"No existen transacciones registradas en el rango desde {start_date} hasta {end_date}.")
+            return
+
+        df_agrupado = df_base.groupby(["Concepto", "Categoría", "Proveedor"]).agg(
+            Repeticiones=("Total ($)", "count"),
+            Cantidad_Acumulada=("Cantidad", "sum"),
+            Monto_Total_Gastado=("Total ($)", "sum")
+        ).reset_index().sort_values(by="Monto_Total_Gastado", ascending=False)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Gasto Filtrado Acumulado", f"${df_base['Total ($)'].sum():,.2f}")
+        col2.metric("Conceptos Distintos en Rango", len(df_agrupado))
+        col3.metric("Proveedores en Rango", df_base["Proveedor"].nunique())
+        
+        st.markdown("---")
+        st.markdown("### 📈 Evolución Temporal de Salidas")
+        df_base["Mes_Periodo"] = pd.to_datetime(df_base["Fecha"]).dt.to_period("M").astype(str)
+        df_mensual = df_base.groupby("Mes_Periodo")["Total ($)"].sum().reset_index().sort_values(by="Mes_Periodo")
+        
+        fig_linea = px.line(
+            df_mensual, x="Mes_Periodo", y="Total ($)", markers=True,
+            labels={"Mes_Periodo": "Mes de Operación", "Total ($)": "Egresos Consolidados ($)"}
+        )
+        fig_linea.update_layout(hovermode="x unified", template="plotly_white")
+        fig_linea.update_traces(line_color="#c0392b", line_width=3, marker=dict(size=8))
+        st.plotly_chart(fig_linea, use_container_width=True)
+        
+        st.markdown("---")
+        df_exportar = df_base.drop(columns=["Fecha_DT", "Mes_Periodo"])
+        
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "📊 Conceptos Consolidados (Agrupados)", 
+            "📋 Historial Filtrado", 
+            "📐 Participación de Rubros", 
+            "🔥 Administrar y Purgar"
+        ])
+        
+        with tab1:
+            st.markdown(f"### 🔄 Gastos Agrupados Automáticamente ({start_date} a {end_date})")
+            st.dataframe(df_agrupado, use_container_width=True, hide_index=True)
+            
+        with tab2:
+            col_header, col_download = st.columns([4, 1])
+            col_header.markdown("### 📜 Transacciones Extraídas en el Periodo")
+            
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_exportar.to_excel(writer, index=False, sheet_name='Historial Filtrado')
+                df_agrupado.to_excel(writer, index=False, sheet_name='Balance Consolidado')
+            
+            col_download.download_button(
+                label="📥 Descargar Reporte en Excel",
+                data=buffer.getvalue(),
+                file_name=f"balance_gastos_ia_{start_date}_{end_date}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            st.dataframe(df_exportar, use_container_width=True, hide_index=True)
+
+        with tab3:
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                st.write("**Gastos por Categoría Financiera:**")
+                df_cat = df_base.groupby("Categoría")["Total ($)"].sum().reset_index()
+                fig_bar = px.bar(df_cat, x="Categoría", y="Total ($)", text_auto='.2f', color="Categoría", color_discrete_sequence=px.colors.qualitative.Safe)
+                fig_bar.update_layout(showlegend=False, template="plotly_white")
+                st.plotly_chart(fig_bar, use_container_width=True)
+            with col_g2:
+                st.write("**Participación por Proveedor:**")
+                df_prov = df_base.groupby("Proveedor")["Total ($)"].sum().reset_index()
+                fig_pie = px.pie(df_prov, values="Total ($)", names="Proveedor", color_discrete_sequence=px.colors.qualitative.Safe)
+                fig_pie.update_traces(textinfo="percent+label")
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+        with tab4:
+            st.markdown("### 🗑️ Eliminación de Comprobantes Erróneos")
+            st.write("Selecciona una factura de la lista desplegable para borrarla por completo del balance.")
+            
+            if datos_cabecera_lista:
+                df_cabecera = pd.DataFrame(datos_cabecera_lista)
+                
+                opciones_selectbox = {
+                    row["id_db"]: f"{row['Comprobante']} | {row['Proveedor']} | ${row['Total Gasto ($)']:,.2f} ({row['Fecha']})"
+                    for _, row in df_cabecera.iterrows()
+                }
+                
+                id_seleccionado = st.selectbox(
+                    "Selecciona el registro a eliminar:", 
+                    options=list(opciones_selectbox.keys()), 
+                    format_func=lambda x: opciones_selectbox[x]
+                )
+                
+                st.error("⚠️ **Acción Irreversible:** Al hacer clic en borrar, se eliminará la cabecera y todas sus líneas de concepto asociadas.")
+                
+                if st.button("🔥 Confirmar Eliminación Definitiva", use_container_width=True):
+                    try:
+                        with get_session() as db:
+                            registro_a_borrar = db.query(DBGasto).filter(DBGasto.id == id_seleccionado).first()
+                            if registro_a_borrar:
+                                db.delete(registro_a_borrar)
+                                db.commit()
+                                st.success("Registro eliminado correctamente de la base de datos.")
+                                st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al eliminar el registro: {e}")
+            else:
+                st.info("No hay facturas registradas disponibles para purgar.")
+
+if __name__ == "__main__":
+    app = ExpenseDashboard()
+    app.render()
