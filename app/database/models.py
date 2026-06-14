@@ -7,6 +7,7 @@ class DBGasto(Base):
     __tablename__ = "gastos"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=False)
     numero_comprobante = Column(String, unique=True, index=True)
     proveedor = Column(String, index=True)
     fecha = Column(DateTime, default=lambda: datetime.now(timezone.utc))

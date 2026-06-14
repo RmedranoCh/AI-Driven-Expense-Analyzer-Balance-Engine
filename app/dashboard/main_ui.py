@@ -1,3 +1,5 @@
+import os
+import uuid
 import streamlit as st
 import pandas as pd
 import pypdf
@@ -5,34 +7,104 @@ import io
 import plotly.express as px
 from decimal import Decimal
 from datetime import datetime, timezone, date
+from dotenv import load_dotenv
 from app.ai.extractor import InvoiceExtractor
 from app.ai.classifier import ExpenseClassifier
 from app.database.session import get_session, Base, get_engine
 from app.database.models import DBGasto, DBGastoItem
 from sqlalchemy.orm import joinedload
+from sqlalchemy import func
+
+load_dotenv()
+
+def get_secret(key: str, default=""):
+    val = os.getenv(key)
+    if val:
+        return val
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return default
 
 st.set_page_config(page_title="Analizador de Balances IA", layout="wide", page_icon="📊")
+st.markdown("""
+    <style>
+    button[data-testid="stBaseButton-header"] {display: none !important;}
+    </style>
+    """, unsafe_allow_html=True)
+
+MAX_INVOICES_PER_USER = 5
+
+def _get_user_id() -> str:
+    uid = st.query_params.get("uid")
+    if uid:
+        return uid
+    uid = str(uuid.uuid4())[:8]
+    st.query_params["uid"] = uid
+    return uid
+
+def _count_user_invoices(user_id: str) -> int:
+    with get_session() as db:
+        return db.query(func.count(DBGasto.id)).filter(DBGasto.user_id == user_id).scalar()
 
 @st.cache_resource
 def get_ai_tools():
-    return InvoiceExtractor(), ExpenseClassifier()
+    return InvoiceExtractor(
+        vision_model=st.session_state.get("vision_model"),
+        text_model=st.session_state.get("text_model"),
+    ), ExpenseClassifier(
+        model=st.session_state.get("classifier_model"),
+    )
 
 class ExpenseDashboard:
     def __init__(self):
         self.extractor, self.classifier = get_ai_tools()
         Base.metadata.create_all(bind=get_engine())
+        self.user_id = _get_user_id()
         
         if "topes_presupuesto" not in st.session_state:
             st.session_state.topes_presupuesto = {cat: 1000.0 for cat in self.classifier.categorias_validas}
 
+    def _is_admin(self) -> bool:
+        if st.session_state.get("admin_mode"):
+            return True
+        query_params = st.query_params
+        if "admin" not in query_params or query_params["admin"] != "1":
+            return False
+        admin_password = os.getenv("ADMIN_PASSWORD", "")
+        if not admin_password:
+            st.session_state.admin_mode = True
+            return True
+        with st.sidebar.expander("🔐 Modo Admin", expanded=True):
+            pwd = st.text_input("Contraseña de admin", type="password", key="admin_login_pwd")
+            if st.button("Ingresar", key="admin_login_btn", type="primary"):
+                if pwd == admin_password:
+                    st.session_state.admin_mode = True
+                    st.rerun()
+                else:
+                    st.error("Contraseña incorrecta")
+        return False
+
     def render(self):
-        st.title("📊 Analizador Inteligente de Gastos y Balances")
+        is_admin = self._is_admin()
+        st.title("Analizador Inteligente de Gastos y Balances")
+        
+        invoices_used = _count_user_invoices(self.user_id)
+        remaining = MAX_INVOICES_PER_USER - invoices_used
         
         st.sidebar.header("📥 Cargar Comprobante")
-        uploaded_file = st.sidebar.file_uploader("Subir Factura Externa (PDF o Imagen)", type=["pdf", "png", "jpg", "jpeg"])
+        st.sidebar.caption(f"⚠️ Límite: {remaining} factura(s) restante(s) para proteger la API de IA.")
+        uploaded_file = st.sidebar.file_uploader(
+            "Subir Factura Externa (PDF o Imagen)", type=["pdf", "png", "jpg", "jpeg"],
+            disabled=remaining <= 0
+        )
         
-        if uploaded_file and st.sidebar.button("Procesar con IA"):
-            self._process_file(uploaded_file)
+        if uploaded_file and st.sidebar.button("Procesar con IA", disabled=remaining <= 0):
+            self._process_file(uploaded_file, invoices_used)
+
+        if is_admin:
+            st.sidebar.markdown("---")
+            st.sidebar.markdown(f"<small>👑 Modo administrador activo</small>", unsafe_allow_html=True)
 
         st.sidebar.markdown("---")
         st.sidebar.header("🔍 Filtros de Balance")
@@ -41,14 +113,42 @@ class ExpenseDashboard:
         fecha_inicio = st.sidebar.date_input("Fecha Inicio", date(año_actual, 1, 1))
         fecha_fin = st.sidebar.date_input("Fecha Fin", date(año_actual, 12, 31))
 
+        if is_admin:
+            with st.sidebar.expander("⚙️ Admin: Modelos IA", expanded=False):
+                st.caption("Solo visible para administradores")
+                vision_model = st.text_input(
+                    "Modelo de Visión",
+                    value=st.session_state.get("vision_model", "meta-llama/llama-4-scout-17b-16e-instruct"),
+                    key="admin_vision"
+                )
+                text_model = st.text_input(
+                    "Modelo de Texto",
+                    value=st.session_state.get("text_model", "llama-3.3-70b-versatile"),
+                    key="admin_text"
+                )
+                classifier_model = st.text_input(
+                    "Modelo de Clasificación",
+                    value=st.session_state.get("classifier_model", "llama-3.3-70b-versatile"),
+                    key="admin_classifier"
+                )
+                if st.button("Aplicar modelos", key="admin_apply", type="primary"):
+                    st.session_state["vision_model"] = vision_model
+                    st.session_state["text_model"] = text_model
+                    st.session_state["classifier_model"] = classifier_model
+                    st.cache_resource.clear()
+                    st.success("Modelos actualizados. Recarga la página para aplicar cambios.")
+
         if "pending_gasto" in st.session_state:
             self._render_confirmation_step()
         else:
-            self._render_budget_alerts()
-            st.markdown("---")
             self._render_stats(fecha_inicio, fecha_fin)
+            st.markdown("---")
+            self._render_budget_alerts()
 
-    def _process_file(self, file):
+    def _process_file(self, file, invoices_used):
+        if invoices_used >= MAX_INVOICES_PER_USER:
+            st.error(f"Límite de {MAX_INVOICES_PER_USER} facturas alcanzado.")
+            return
         with st.spinner("La IA está analizando los conceptos del documento..."):
             try:
                 if file.type == "application/pdf":
@@ -77,7 +177,8 @@ class ExpenseDashboard:
                     })
                     
                 st.session_state.pending_gasto = {
-                    "proveedor": raw_data["proveedor"], 
+                    "proveedor": raw_data["proveedor"],
+                    "fecha": raw_data.get("fecha"),
                     "items": items_procesados,
                     "total_ia": float(total_calculado)
                 }
@@ -89,7 +190,18 @@ class ExpenseDashboard:
         st.warning("📋 **Verificación Requerida:** Revisa los datos del gasto extraídos por la IA.")
         data = st.session_state.pending_gasto
         
-        proveedor_editado = st.text_input("Proveedor", data["proveedor"])
+        col_prov, col_fecha = st.columns(2)
+        proveedor_editado = col_prov.text_input("Proveedor", data["proveedor"])
+        
+        fecha_value = data.get("fecha")
+        if fecha_value:
+            try:
+                fecha_default = datetime.strptime(fecha_value, "%Y-%m-%d").date()
+            except ValueError:
+                fecha_default = date.today()
+        else:
+            fecha_default = date.today()
+        fecha_editada = col_fecha.date_input("Fecha de la factura", value=fecha_default)
         
         edited_df = st.data_editor(
             pd.DataFrame(data["items"]), 
@@ -113,19 +225,22 @@ class ExpenseDashboard:
         st.markdown("---")
 
         col1, col2 = st.columns(2)
-        if col1.button("✅ Confirmar y Guardar"): 
-            self._final_save(proveedor_editado, edited_df, total_recalculado)
+        if col1.button("✅ Confirmar y Guardar", type="primary"):
+            self._final_save(proveedor_editado, edited_df, total_recalculado, fecha_editada)
         if col2.button("❌ Cancelar"): 
             del st.session_state.pending_gasto
             st.rerun()
 
-    def _final_save(self, proveedor, df_final, total_recalculado):
+    def _final_save(self, proveedor, df_final, total_recalculado, fecha):
         try:
             timestamp = int(datetime.now(timezone.utc).timestamp())
+            fecha_dt = datetime.combine(fecha, datetime.min.time()).replace(tzinfo=timezone.utc) if fecha else datetime.now(timezone.utc)
             with get_session() as db:
                 db_gasto = DBGasto(
+                    user_id=self.user_id,
                     numero_comprobante=f"EXP-{timestamp}",
                     proveedor=proveedor,
+                    fecha=fecha_dt,
                     total_gasto=float(total_recalculado)
                 )
                 db_gasto.items = [
@@ -151,7 +266,9 @@ class ExpenseDashboard:
         st.subheader("🚨 Control de Presupuestos Mensuales")
         
         with get_session() as db:
-            items_query = db.query(DBGastoItem).options(joinedload(DBGastoItem.gasto)).all()
+            items_query = db.query(DBGastoItem).options(joinedload(DBGastoItem.gasto)).filter(
+                DBGasto.user_id == self.user_id
+            ).all()
             
         if not items_query:
             return
@@ -240,8 +357,10 @@ class ExpenseDashboard:
 
     def _render_stats(self, start_date, end_date):
         with get_session() as db:
-            items_query = db.query(DBGastoItem).options(joinedload(DBGastoItem.gasto)).all()
-            gastos_cabecera = db.query(DBGasto).all()
+            items_query = db.query(DBGastoItem).options(joinedload(DBGastoItem.gasto)).filter(
+                DBGasto.user_id == self.user_id
+            ).all()
+            gastos_cabecera = db.query(DBGasto).filter(DBGasto.user_id == self.user_id).all()
             
             if not items_query:
                 st.info("Sin registros de gastos cargados en el sistema.")
@@ -305,12 +424,17 @@ class ExpenseDashboard:
         st.markdown("---")
         df_exportar = df_base.drop(columns=["Fecha_DT", "Mes_Periodo"])
         
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "📊 Conceptos Consolidados (Agrupados)", 
-            "📋 Historial Filtrado", 
-            "📐 Participación de Rubros", 
-            "🔥 Administrar y Purgar"
-        ])
+        is_admin = st.session_state.get("admin_mode", False)
+        tabs_list = [
+            "📊 Conceptos Consolidados (Agrupados)",
+            "📋 Historial Filtrado",
+            "📐 Participación de Rubros",
+        ]
+        if is_admin:
+            tabs_list.append("🔥 Administrar y Purgar")
+        tabs = st.tabs(tabs_list)
+        tab1, tab2, tab3 = tabs[0], tabs[1], tabs[2]
+        tab4 = tabs[3] if is_admin else None
         
         with tab1:
             st.markdown(f"### 🔄 Gastos Agrupados Automáticamente ({start_date} a {end_date})")
@@ -349,39 +473,43 @@ class ExpenseDashboard:
                 fig_pie.update_traces(textinfo="percent+label")
                 st.plotly_chart(fig_pie, use_container_width=True)
 
-        with tab4:
-            st.markdown("### 🗑️ Eliminación de Comprobantes Erróneos")
-            st.write("Selecciona una factura de la lista desplegable para borrarla por completo del balance.")
-            
-            if datos_cabecera_lista:
-                df_cabecera = pd.DataFrame(datos_cabecera_lista)
+        if tab4:
+            with tab4:
+                st.markdown("### 🗑️ Eliminación de Comprobantes Erróneos")
+                st.write("Selecciona una factura de la lista desplegable para borrarla por completo del balance.")
                 
-                opciones_selectbox = {
-                    row["id_db"]: f"{row['Comprobante']} | {row['Proveedor']} | ${row['Total Gasto ($)']:,.2f} ({row['Fecha']})"
-                    for _, row in df_cabecera.iterrows()
-                }
-                
-                id_seleccionado = st.selectbox(
-                    "Selecciona el registro a eliminar:", 
-                    options=list(opciones_selectbox.keys()), 
-                    format_func=lambda x: opciones_selectbox[x]
-                )
-                
-                st.error("⚠️ **Acción Irreversible:** Al hacer clic en borrar, se eliminará la cabecera y todas sus líneas de concepto asociadas.")
-                
-                if st.button("🔥 Confirmar Eliminación Definitiva", use_container_width=True):
-                    try:
-                        with get_session() as db:
-                            registro_a_borrar = db.query(DBGasto).filter(DBGasto.id == id_seleccionado).first()
-                            if registro_a_borrar:
-                                db.delete(registro_a_borrar)
-                                db.commit()
-                                st.success("Registro eliminado correctamente de la base de datos.")
-                                st.rerun()
-                    except Exception as e:
-                        st.error(f"Error al eliminar el registro: {e}")
-            else:
-                st.info("No hay facturas registradas disponibles para purgar.")
+                if datos_cabecera_lista:
+                    df_cabecera = pd.DataFrame(datos_cabecera_lista)
+                    
+                    opciones_selectbox = {
+                        row["id_db"]: f"{row['Comprobante']} | {row['Proveedor']} | ${row['Total Gasto ($)']:,.2f} ({row['Fecha']})"
+                        for _, row in df_cabecera.iterrows()
+                    }
+                    
+                    id_seleccionado = st.selectbox(
+                        "Selecciona el registro a eliminar:", 
+                        options=list(opciones_selectbox.keys()), 
+                        format_func=lambda x: opciones_selectbox[x]
+                    )
+                    
+                    st.error("⚠️ **Acción Irreversible:** Al hacer clic en borrar, se eliminará la cabecera y todas sus líneas de concepto asociadas.")
+                    
+                    if st.button("🔥 Confirmar Eliminación Definitiva", use_container_width=True):
+                        try:
+                            with get_session() as db:
+                                registro_a_borrar = db.query(DBGasto).filter(
+                                    DBGasto.id == id_seleccionado,
+                                    DBGasto.user_id == self.user_id
+                                ).first()
+                                if registro_a_borrar:
+                                    db.delete(registro_a_borrar)
+                                    db.commit()
+                                    st.success("Registro eliminado correctamente de la base de datos.")
+                                    st.rerun()
+                        except Exception as e:
+                            st.error(f"Error al eliminar el registro: {e}")
+                else:
+                    st.info("No hay facturas registradas disponibles para purgar.")
 
 if __name__ == "__main__":
     app = ExpenseDashboard()

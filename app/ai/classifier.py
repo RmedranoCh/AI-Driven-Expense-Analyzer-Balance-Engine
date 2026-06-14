@@ -1,14 +1,25 @@
 import os
 import json
+import streamlit as st
 from groq import Groq
 from dotenv import load_dotenv
 from typing import List
 
 load_dotenv()
 
+def _get_groq_key():
+    key = os.getenv("GROQ_API_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets["GROQ_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        raise RuntimeError("GROQ_API_KEY not found in env or Streamlit secrets")
+
 class ExpenseClassifier:    
-    def __init__(self):
-        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    def __init__(self, model: str = None):
+        self.client = Groq(api_key=_get_groq_key())
+        self.model = model or "llama-3.3-70b-versatile"
         self.categorias_validas = [
             "Infraestructura Cloud & Hosting", 
             "Herramientas SaaS & Software",
@@ -45,7 +56,7 @@ class ExpenseClassifier:
         try:
             response = self.client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile",
+                model=self.model,
                 response_format={"type": "json_object"}
             )
 

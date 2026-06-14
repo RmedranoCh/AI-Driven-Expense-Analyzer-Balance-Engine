@@ -1,14 +1,25 @@
 import os
 import json
 import base64
+from datetime import datetime
+import streamlit as st
 from groq import Groq
 from decimal import Decimal
 
+def _get_groq_key():
+    key = os.getenv("GROQ_API_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets["GROQ_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        raise RuntimeError("GROQ_API_KEY not found in env or Streamlit secrets")
+
 class InvoiceExtractor:
-    def __init__(self):
-        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        self.vision_model = "meta-llama/llama-4-scout-17b-16e-instruct"
-        self.text_model = "llama-3.3-70b-versatile"
+    def __init__(self, vision_model: str = None, text_model: str = None):
+        self.client = Groq(api_key=_get_groq_key())
+        self.vision_model = vision_model or "meta-llama/llama-4-scout-17b-16e-instruct"
+        self.text_model = text_model or "llama-3.3-70b-versatile"
 
     def extract_from_text(self, text: str) -> dict:
         prompt = f"""
@@ -21,9 +32,13 @@ class InvoiceExtractor:
         o facturas emitidas a través de un banco hacia una persona/comercio, NO extraigas el nombre del banco como proveedor.
         En su lugar, localiza el nombre del comercio, vendedor o tercero real que originó el cobro del gasto.
 
+        REGLA PARA LA FECHA:
+        Extrae la fecha de emisión de la factura (NO la fecha actual). Si no encuentras fecha, usa null.
+
         Esquema esperado:
         {{
-            "proveedor": "Nombre del Vendedor/Comercio Real (Evitar nombres de intermediarios bancarios si el gasto es de un tercero)",
+            "proveedor": "Nombre del Vendedor/Comercio Real",
+            "fecha": "YYYY-MM-DD o null si no se encuentra",
             "items": [
                 {{
                     "descripcion": "Descripción del concepto",
@@ -43,6 +58,7 @@ class InvoiceExtractor:
         Analiza visualmente esta factura externa de compra.
         Responde EXCLUSIVAMENTE con un JSON que contenga las llaves:
         - "proveedor" (string)
+        - "fecha" (string en formato YYYY-MM-DD, o null si no se encuentra fecha)
         - "items" (lista de objetos con: "descripcion", "cantidad", "precio_unitario").
 
         REGLA CRÍTICA PARA EL PROVEEDOR:
@@ -50,6 +66,9 @@ class InvoiceExtractor:
         Si el documento es un formato preimpreso de una entidad financiera (ej. Banco Unión) pero detalla una transacción 
         u operación comercial hacia/desde un tercero o cliente, prioriza el nombre del comercio o titular real del servicio, 
         evitando colocar las siglas del banco intermediario como proveedor.
+
+        REGLA PARA LA FECHA:
+        Extrae la fecha de emisión de la factura visible en el documento (NO la fecha actual).
         """
         base64_image = base64.b64encode(image_bytes).decode('utf-8')
         messages = [
@@ -83,8 +102,19 @@ class InvoiceExtractor:
             try: return Decimal(clean_str) if clean_str else Decimal("0.00")
             except Exception: return Decimal("0.00")
 
+        def parse_date(v):
+            if not v or str(v).lower() in ("null", "none", ""):
+                return None
+            for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%y"):
+                try:
+                    return datetime.strptime(str(v).strip(), fmt).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
+            return None
+
         return {
             "proveedor": str(raw_data.get("proveedor", raw_data.get("cliente", "Desconocido"))),
+            "fecha": parse_date(raw_data.get("fecha")),
             "items": [
                 {
                     "descripcion": str(item.get("descripcion", "Concepto General")),
