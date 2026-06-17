@@ -1,0 +1,25 @@
+name: Keep Streamlit Alive
+
+on:
+  schedule:
+    - cron: '0 */10 * * *'
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@://github.com"
+
+      - name: Hacer commit vacío y Push
+        run: |
+          git commit --allow-empty -m "Chore: Mantener Streamlit despierto (Commit automático)"
+          git push origin main
