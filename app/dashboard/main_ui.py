@@ -1,5 +1,8 @@
 import os
+import time
 import uuid
+import hashlib
+import secrets
 import streamlit as st
 import pandas as pd
 import pypdf
@@ -25,6 +28,8 @@ def get_secret(key: str, default=""):
         return st.secrets[key]
     except (KeyError, FileNotFoundError):
         return default
+
+ADMIN_PEPPER = get_secret("ADMIN_PEPPER", "")
 
 st.set_page_config(page_title="Analizador de Balances IA", layout="wide", page_icon="📊")
 st.markdown("""
@@ -65,25 +70,53 @@ class ExpenseDashboard:
         if "topes_presupuesto" not in st.session_state:
             st.session_state.topes_presupuesto = {cat: 1000.0 for cat in self.classifier.categorias_validas}
 
+    def _check_admin_login(self) -> bool:
+        admin_password = get_secret("ADMIN_PASSWORD", "")
+        if not admin_password:
+            st.session_state.admin_mode = True
+            return True
+
+        if "admin_login_attempts" not in st.session_state:
+            st.session_state.admin_login_attempts = 0
+            st.session_state.admin_lockout_until = 0.0
+
+        now = time.time()
+        if now < st.session_state.admin_lockout_until:
+            wait = int(st.session_state.admin_lockout_until - now)
+            st.sidebar.error(f"⏳ Demasiados intentos. Espera {wait}s.")
+            return False
+
+        with st.sidebar.expander("🔐 Modo Admin", expanded=True):
+            pwd = st.text_input("Contraseña de admin", type="password", key="admin_login_pwd")
+            clicked = st.button("Ingresar", key="admin_login_btn", type="primary", use_container_width=True)
+            if clicked:
+                pepper = ADMIN_PEPPER or "expense-analyzer-default-pepper"
+                pwd_hash = hashlib.pbkdf2_hmac('sha256', pwd.encode(), pepper.encode(), 100000).hex()
+                admin_hash = hashlib.pbkdf2_hmac('sha256', admin_password.encode(), pepper.encode(), 100000).hex()
+                ok = secrets.compare_digest(pwd_hash, admin_hash)
+                if ok:
+                    st.session_state.admin_login_attempts = 0
+                    st.session_state.admin_lockout_until = 0.0
+                    st.session_state.admin_mode = True
+                    st.rerun()
+                else:
+                    st.session_state.admin_login_attempts += 1
+                    attempts = st.session_state.admin_login_attempts
+                    if attempts >= 5:
+                        delay = min(60 * (attempts - 4), 900)
+                        st.session_state.admin_lockout_until = now + delay
+                        st.error(f"🔒 Bloqueado por {delay}s por seguridad.")
+                    else:
+                        st.error(f"Contraseña incorrecta. {5 - attempts} intento(s) restante(s).")
+        return False
+
     def _is_admin(self) -> bool:
         if st.session_state.get("admin_mode"):
             return True
         query_params = st.query_params
         if "admin" not in query_params or query_params["admin"] != "1":
             return False
-        admin_password = os.getenv("ADMIN_PASSWORD", "")
-        if not admin_password:
-            st.session_state.admin_mode = True
-            return True
-        with st.sidebar.expander("🔐 Modo Admin", expanded=True):
-            pwd = st.text_input("Contraseña de admin", type="password", key="admin_login_pwd")
-            if st.button("Ingresar", key="admin_login_btn", type="primary"):
-                if pwd == admin_password:
-                    st.session_state.admin_mode = True
-                    st.rerun()
-                else:
-                    st.error("Contraseña incorrecta")
-        return False
+        return self._check_admin_login()
 
     def render(self):
         is_admin = self._is_admin()
@@ -93,18 +126,24 @@ class ExpenseDashboard:
         remaining = MAX_INVOICES_PER_USER - invoices_used
         
         st.sidebar.header("📥 Cargar Comprobante")
-        st.sidebar.caption(f"⚠️ Límite: {remaining} factura(s) restante(s) para proteger la API de IA.")
+        if is_admin:
+            st.sidebar.caption("♾️ Sin límite de facturas (modo administrador).")
+        else:
+            st.sidebar.caption(f"⚠️ Límite: {remaining} factura(s) restante(s) para proteger la API de IA.")
         uploaded_file = st.sidebar.file_uploader(
             "Subir Factura Externa (PDF o Imagen)", type=["pdf", "png", "jpg", "jpeg"],
-            disabled=remaining <= 0
+            disabled=not is_admin and remaining <= 0
         )
         
-        if uploaded_file and st.sidebar.button("Procesar con IA", disabled=remaining <= 0):
-            self._process_file(uploaded_file, invoices_used)
+        if uploaded_file and st.sidebar.button("Procesar con IA", disabled=not is_admin and remaining <= 0):
+            self._process_file(uploaded_file, invoices_used, is_admin)
 
         if is_admin:
             st.sidebar.markdown("---")
             st.sidebar.markdown(f"<small>👑 Modo administrador activo</small>", unsafe_allow_html=True)
+            if st.sidebar.button("🚪 Cerrar sesión admin", key="admin_logout"):
+                del st.session_state["admin_mode"]
+                st.rerun()
 
         st.sidebar.markdown("---")
         st.sidebar.header("🔍 Filtros de Balance")
@@ -145,8 +184,8 @@ class ExpenseDashboard:
             st.markdown("---")
             self._render_budget_alerts()
 
-    def _process_file(self, file, invoices_used):
-        if invoices_used >= MAX_INVOICES_PER_USER:
+    def _process_file(self, file, invoices_used, is_admin=False):
+        if not is_admin and invoices_used >= MAX_INVOICES_PER_USER:
             st.error(f"Límite de {MAX_INVOICES_PER_USER} facturas alcanzado.")
             return
         with st.spinner("La IA está analizando los conceptos del documento..."):
