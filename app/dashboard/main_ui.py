@@ -70,6 +70,104 @@ class ExpenseDashboard:
         if "topes_presupuesto" not in st.session_state:
             st.session_state.topes_presupuesto = {cat: 1000.0 for cat in self.classifier.categorias_validas}
 
+    def _clear_user_data(self):
+        with get_session() as db:
+            gastos = db.query(DBGasto).filter(DBGasto.user_id == self.user_id).all()
+            for g in gastos:
+                db.delete(g)
+            db.commit()
+
+    def _seed_demo_data(self):
+        from datetime import timedelta
+        demo_invoices = [
+            {
+                "proveedor": "Amazon Web Services",
+                "fecha": datetime.now(timezone.utc) - timedelta(days=40),
+                "items": [
+                    {"descripcion": "Servicio EC2 - Instancia t3.large", "cantidad": 1, "precio_unitario": 245.50, "categoria": "Infraestructura Cloud"},
+                    {"descripcion": "Almacenamiento S3 Standard", "cantidad": 1, "precio_unitario": 89.99, "categoria": "Infraestructura Cloud"},
+                    {"descripcion": "Base de Datos RDS - MySQL", "cantidad": 1, "precio_unitario": 178.25, "categoria": "Infraestructura Cloud"},
+                ]
+            },
+            {
+                "proveedor": "Google Cloud Platform",
+                "fecha": datetime.now(timezone.utc) - timedelta(days=35),
+                "items": [
+                    {"descripcion": "Google Kubernetes Engine", "cantidad": 1, "precio_unitario": 312.00, "categoria": "Infraestructura Cloud"},
+                    {"descripcion": "Cloud Storage Nearline", "cantidad": 1, "precio_unitario": 45.60, "categoria": "Infraestructura Cloud"},
+                ]
+            },
+            {
+                "proveedor": "Slack Technologies",
+                "fecha": datetime.now(timezone.utc) - timedelta(days=45),
+                "items": [
+                    {"descripcion": "Suscripción Slack Pro - 15 usuarios", "cantidad": 15, "precio_unitario": 12.50, "categoria": "SaaS"},
+                ]
+            },
+            {
+                "proveedor": "Meta Ads",
+                "fecha": datetime.now(timezone.utc) - timedelta(days=30),
+                "items": [
+                    {"descripcion": "Campaña Instagram Q2 - Lead Generation", "cantidad": 1, "precio_unitario": 1500.00, "categoria": "Marketing"},
+                    {"descripcion": "Campaña Facebook Retargeting", "cantidad": 1, "precio_unitario": 850.00, "categoria": "Marketing"},
+                ]
+            },
+            {
+                "proveedor": "Dell Technologies",
+                "fecha": datetime.now(timezone.utc) - timedelta(days=55),
+                "items": [
+                    {"descripcion": "Laptop Dell Latitude 5540", "cantidad": 3, "precio_unitario": 1250.00, "categoria": "Hardware"},
+                    {"descripcion": "Monitor Dell UltraSharp 27\"", "cantidad": 3, "precio_unitario": 450.00, "categoria": "Hardware"},
+                ]
+            },
+            {
+                "proveedor": "Atlassian",
+                "fecha": datetime.now(timezone.utc) - timedelta(days=50),
+                "items": [
+                    {"descripcion": "Jira Software Cloud - 20 usuarios", "cantidad": 20, "precio_unitario": 7.50, "categoria": "SaaS"},
+                    {"descripcion": "Confluence Cloud - 20 usuarios", "cantidad": 20, "precio_unitario": 5.75, "categoria": "SaaS"},
+                ]
+            },
+            {
+                "proveedor": "Ernst & Young",
+                "fecha": datetime.now(timezone.utc) - timedelta(days=48),
+                "items": [
+                    {"descripcion": "Consultoría Tributaria - Auditoría Fiscal", "cantidad": 1, "precio_unitario": 3500.00, "categoria": "Servicios Profesionales"},
+                ]
+            },
+            {
+                "proveedor": "American Airlines",
+                "fecha": datetime.now(timezone.utc) - timedelta(days=42),
+                "items": [
+                    {"descripcion": "Vuelo NY - CDMX ida y vuelta", "cantidad": 2, "precio_unitario": 685.00, "categoria": "Viajes"},
+                    {"descripcion": "Hotel Marriott 3 noches", "cantidad": 3, "precio_unitario": 220.00, "categoria": "Viajes"},
+                ]
+            },
+        ]
+        self._clear_user_data()
+        with get_session() as db:
+            for inv in demo_invoices:
+                total = sum(it["cantidad"] * it["precio_unitario"] for it in inv["items"])
+                db_gasto = DBGasto(
+                    user_id=self.user_id,
+                    numero_comprobante=f"DEMO-{int(inv['fecha'].timestamp())}",
+                    proveedor=inv["proveedor"],
+                    fecha=inv["fecha"],
+                    total_gasto=total,
+                )
+                db_gasto.items = [
+                    DBGastoItem(
+                        descripcion=it["descripcion"],
+                        cantidad=it["cantidad"],
+                        precio_unitario=it["precio_unitario"],
+                        total_linea=it["cantidad"] * it["precio_unitario"],
+                        categoria=it["categoria"],
+                        gasto=db_gasto,
+                    ) for it in inv["items"]
+                ]
+                db.add(db_gasto)
+            db.commit()
+
     def _check_admin_login(self) -> bool:
         admin_password = get_secret("ADMIN_PASSWORD", "")
         if not admin_password:
@@ -121,22 +219,54 @@ class ExpenseDashboard:
     def render(self):
         is_admin = self._is_admin()
         st.title("Analizador Inteligente de Gastos y Balances")
-        
+
+        if "demo_mode" not in st.session_state:
+            st.session_state.demo_mode = True
+            self._seed_demo_data()
+
+        demo_mode = st.session_state.demo_mode
+
         invoices_used = _count_user_invoices(self.user_id)
         remaining = MAX_INVOICES_PER_USER - invoices_used
-        
+
+        if demo_mode:
+            st.info("""
+            **👋 Bienvenido al Modo Demo**  
+            Estás viendo datos de ejemplo para explorar las capacidades del sistema.  
+            *La carga de comprobantes está desactivada en este modo.*
+            """)
+            demo_col1, demo_col2 = st.columns([1, 4])
+            with demo_col1:
+                if st.button("🚀 Usar programa", use_container_width=True, type="primary"):
+                    self._clear_user_data()
+                    st.session_state.demo_mode = False
+                    st.rerun()
+            with demo_col2:
+                st.caption("Limpia los datos de demo y habilita la carga de tus propias facturas.")
+
         st.sidebar.header("📥 Cargar Comprobante")
-        if is_admin:
+        if demo_mode:
+            st.sidebar.info("🔒 Desactivado en modo demo. Haz clic en 'Usar programa' para cargar tus propias facturas.")
+        elif is_admin:
             st.sidebar.caption("♾️ Sin límite de facturas (modo administrador).")
         else:
             st.sidebar.caption(f"⚠️ Límite: {remaining} factura(s) restante(s) para proteger la API de IA.")
+
         uploaded_file = st.sidebar.file_uploader(
             "Subir Factura Externa (PDF o Imagen)", type=["pdf", "png", "jpg", "jpeg"],
-            disabled=not is_admin and remaining <= 0
+            disabled=demo_mode or (not is_admin and remaining <= 0)
         )
-        
-        if uploaded_file and st.sidebar.button("Procesar con IA", disabled=not is_admin and remaining <= 0):
+
+        if uploaded_file and st.sidebar.button("Procesar con IA", disabled=demo_mode or (not is_admin and remaining <= 0)):
             self._process_file(uploaded_file, invoices_used, is_admin)
+
+        if not demo_mode:
+            with st.sidebar.expander("🔁 Volver a demo", expanded=False):
+                st.caption("Carga datos de ejemplo para explorar la herramienta.")
+                if st.button("📦 Cargar datos demo", use_container_width=True):
+                    self._seed_demo_data()
+                    st.session_state.demo_mode = True
+                    st.rerun()
 
         if is_admin:
             st.sidebar.markdown("---")
@@ -145,9 +275,19 @@ class ExpenseDashboard:
                 del st.session_state["admin_mode"]
                 st.rerun()
 
+        with st.sidebar.expander("🔒 Privacidad", expanded=False):
+            st.caption("""
+            **¿Qué pasa con tus datos?**  
+            - Los comprobantes que subes se envían a **Groq AI** para extraer y clasificar la información.  
+            - Los datos extraídos se guardan temporalmente en la base de datos local.  
+            - **No compartimos ni almacenamos tus facturas fuera de esta sesión.**  
+            - Puedes limpiar todos tus datos en cualquier momento saliendo del modo demo.  
+            - Este es un proyecto de demostración; no uses datos sensibles o confidenciales.
+            """)
+
         st.sidebar.markdown("---")
         st.sidebar.header("🔍 Filtros de Balance")
-        
+
         año_actual = datetime.now().year
         fecha_inicio = st.sidebar.date_input("Fecha Inicio", date(año_actual, 1, 1))
         fecha_fin = st.sidebar.date_input("Fecha Fin", date(año_actual, 12, 31))
@@ -188,42 +328,53 @@ class ExpenseDashboard:
         if not is_admin and invoices_used >= MAX_INVOICES_PER_USER:
             st.error(f"Límite de {MAX_INVOICES_PER_USER} facturas alcanzado.")
             return
-        with st.spinner("La IA está analizando los conceptos del documento..."):
-            try:
-                if file.type == "application/pdf":
-                    reader = pypdf.PdfReader(file)
-                    text = "\n".join([p.extract_text() for p in reader.pages if p.extract_text()])
-                    raw_data = self.extractor.extract_from_text(text) if text.strip() else self.extractor.extract_from_image(file.getvalue(), "image/jpeg")
+        status = st.status("Iniciando análisis del documento...", expanded=True)
+        try:
+            status.update(label="📄 Leyendo contenido del archivo...")
+            if file.type == "application/pdf":
+                reader = pypdf.PdfReader(file)
+                text = "\n".join([p.extract_text() for p in reader.pages if p.extract_text()])
+                if text.strip():
+                    status.update(label="🤖 Enviando texto a IA para extraer datos...")
+                    raw_data = self.extractor.extract_from_text(text)
                 else:
-                    raw_data = self.extractor.extract_from_image(file.getvalue(), file.type)
+                    status.update(label="🖼️ Procesando imagen del PDF con IA de visión...")
+                    raw_data = self.extractor.extract_from_image(file.getvalue(), "image/jpeg")
+            else:
+                status.update(label="🖼️ Analizando imagen con IA de visión...")
+                raw_data = self.extractor.extract_from_image(file.getvalue(), file.type)
 
-                descripciones = [it["descripcion"] for it in raw_data["items"]]
-                categorias_ia = self.classifier.classify_batch(descripciones)
+            status.update(label="🏷️ Clasificando conceptos con IA...")
+            descripciones = [it["descripcion"] for it in raw_data["items"]]
+            categorias_ia = self.classifier.classify_batch(descripciones)
 
-                items_procesados = []
-                total_calculado = Decimal("0.00")
+            status.update(label="📊 Preparando datos para revisión...")
+            items_procesados = []
+            total_calculado = Decimal("0.00")
+            
+            for i, it in enumerate(raw_data["items"]):
+                subtotal = Decimal(str(it["cantidad"])) * Decimal(str(it["precio_unitario"]))
+                total_calculado += subtotal
                 
-                for i, it in enumerate(raw_data["items"]):
-                    subtotal = Decimal(str(it["cantidad"])) * Decimal(str(it["precio_unitario"]))
-                    total_calculado += subtotal
-                    
-                    items_procesados.append({
-                        "descripcion": it["descripcion"],
-                        "cantidad": float(it["cantidad"]),
-                        "precio_unitario": float(it["precio_unitario"]),
-                        "total_linea": float(subtotal),
-                        "categoria": categorias_ia[i] if i < len(categorias_ia) else "Otros"
-                    })
-                    
-                st.session_state.pending_gasto = {
-                    "proveedor": raw_data["proveedor"],
-                    "fecha": raw_data.get("fecha"),
-                    "items": items_procesados,
-                    "total_ia": float(total_calculado)
-                }
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error crítico de procesamiento: {e}")
+                items_procesados.append({
+                    "descripcion": it["descripcion"],
+                    "cantidad": float(it["cantidad"]),
+                    "precio_unitario": float(it["precio_unitario"]),
+                    "total_linea": float(subtotal),
+                    "categoria": categorias_ia[i] if i < len(categorias_ia) else "Otros"
+                })
+                
+            st.session_state.pending_gasto = {
+                "proveedor": raw_data["proveedor"],
+                "fecha": raw_data.get("fecha"),
+                "items": items_procesados,
+                "total_ia": float(total_calculado)
+            }
+            status.update(label="✅ Análisis completado con éxito", state="complete")
+            st.rerun()
+        except Exception as e:
+            status.update(label="❌ Error en el procesamiento", state="error")
+            st.error(f"Error crítico de procesamiento: {e}")
 
     def _render_confirmation_step(self):
         st.warning("📋 **Verificación Requerida:** Revisa los datos del gasto extraídos por la IA.")
