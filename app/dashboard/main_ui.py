@@ -118,7 +118,7 @@ class ExpenseDashboard:
                 st.caption("Solo visible para administradores")
                 vision_model = st.text_input(
                     "Modelo de Visión",
-                    value=st.session_state.get("vision_model", "meta-llama/llama-4-scout-17b-16e-instruct"),
+                    value=st.session_state.get("vision_model", "qwen/qwen3.6-27b"),
                     key="admin_vision"
                 )
                 text_model = st.text_input(

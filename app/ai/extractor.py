@@ -18,7 +18,7 @@ def _get_groq_key():
 class InvoiceExtractor:
     def __init__(self, vision_model: str = None, text_model: str = None):
         self.client = Groq(api_key=_get_groq_key())
-        self.vision_model = vision_model or "meta-llama/llama-4-scout-17b-16e-instruct"
+        self.vision_model = vision_model or "qwen/qwen3.6-27b"
         self.text_model = text_model or "llama-3.3-70b-versatile"
 
     def extract_from_text(self, text: str) -> dict:
