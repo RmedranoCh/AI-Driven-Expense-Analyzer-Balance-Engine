@@ -1,9 +1,11 @@
 import os
 import time
+import threading
 import streamlit as st
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError
+from contextlib import contextmanager
 
 def _get_database_url():
     url = os.getenv("DATABASE_URL")
@@ -19,13 +21,16 @@ Base = declarative_base()
 
 _engine = None
 _SessionLocal = None
+_using_sqlite = False
+_sqlite_lock = threading.Lock()
 
 def get_engine():
-    global _engine
+    global _engine, _using_sqlite
     if _engine:
         return _engine
 
     if DATABASE_URL:
+        _using_sqlite = False
         _engine = create_engine(DATABASE_URL, pool_pre_ping=True)
         for i in range(5):
             try:
@@ -35,6 +40,7 @@ def get_engine():
                 time.sleep(5)
         raise Exception("No se pudo conectar a la DB.")
     else:
+        _using_sqlite = True
         db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(db_dir, exist_ok=True)
         db_path = os.path.join(db_dir, "expenses.db")
@@ -42,9 +48,20 @@ def get_engine():
 
     return _engine
 
+@contextmanager
 def get_session():
-    global _SessionLocal
+    global _SessionLocal, _using_sqlite
     if _SessionLocal is None:
         engine = get_engine()
         _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    return _SessionLocal()
+
+    if _using_sqlite:
+        _sqlite_lock.acquire()
+
+    session = _SessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+        if _using_sqlite:
+            _sqlite_lock.release()

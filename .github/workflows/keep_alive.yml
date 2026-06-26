@@ -1,0 +1,16 @@
+name: Keep Streamlit Alive
+
+on:
+  schedule:
+    - cron: '*/25 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping a la app de Streamlit
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" \
+            "https://app-ai-driven-expense-analyzer-balance-engine-zbdbsk74tbv5zk83.streamlit.app/?uid=d5ddf551" \
+            || echo "Ping falló (no crítico)"
