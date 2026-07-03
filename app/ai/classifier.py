@@ -19,7 +19,7 @@ def _get_groq_key():
 class ExpenseClassifier:    
     def __init__(self, model: str = None):
         self.client = Groq(api_key=_get_groq_key())
-        self.model = model or "llama-3.3-70b-versatile"
+        self.model = model or "openai/gpt-oss-120b"
         self.categorias_validas = [
             "Infraestructura Cloud & Hosting", 
             "Herramientas SaaS & Software",

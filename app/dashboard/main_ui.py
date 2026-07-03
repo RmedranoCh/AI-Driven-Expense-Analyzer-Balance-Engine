@@ -323,12 +323,12 @@ class ExpenseDashboard:
                 )
                 text_model = st.text_input(
                     "Modelo de Texto",
-                    value=st.session_state.get("text_model", "llama-3.3-70b-versatile"),
+                    value=st.session_state.get("text_model", "openai/gpt-oss-120b"),
                     key="admin_text"
                 )
                 classifier_model = st.text_input(
                     "Modelo de Clasificación",
-                    value=st.session_state.get("classifier_model", "llama-3.3-70b-versatile"),
+                    value=st.session_state.get("classifier_model", "openai/gpt-oss-120b"),
                     key="admin_classifier"
                 )
                 if st.button("Aplicar modelos", key="admin_apply", type="primary"):
