@@ -1,24 +1,14 @@
-import os
 import json
-import streamlit as st
 from groq import Groq
 from dotenv import load_dotenv
 from typing import List
+from app.ai._common import get_groq_key
 
 load_dotenv()
 
-def _get_groq_key():
-    key = os.getenv("GROQ_API_KEY")
-    if key:
-        return key
-    try:
-        return st.secrets["GROQ_API_KEY"]
-    except (KeyError, FileNotFoundError):
-        raise RuntimeError("GROQ_API_KEY not found in env or Streamlit secrets")
-
 class ExpenseClassifier:    
     def __init__(self, model: str = None):
-        self.client = Groq(api_key=_get_groq_key())
+        self.client = Groq(api_key=get_groq_key())
         self.model = model or "openai/gpt-oss-120b"
         self.categorias_validas = [
             "Infraestructura Cloud & Hosting", 

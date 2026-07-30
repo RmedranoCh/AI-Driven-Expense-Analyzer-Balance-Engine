@@ -15,7 +15,7 @@ from app.ai.extractor import InvoiceExtractor
 from app.ai.classifier import ExpenseClassifier
 from app.database.session import get_session, Base, get_engine
 from app.database.models import DBGasto, DBGastoItem, DBPresupuestoTope
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, contains_eager
 from sqlalchemy import func
 
 load_dotenv()
@@ -65,7 +65,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-MAX_INVOICES_PER_USER = 5
+MAX_INVOICES_PER_USER = int(os.getenv("MAX_INVOICES_PER_USER", "5"))
 
 def _get_user_id() -> str:
     uid = st.query_params.get("uid")
@@ -173,7 +173,7 @@ class ExpenseDashboard:
         self._clear_user_data()
         with get_session() as db:
             for inv in demo_invoices:
-                total = sum(it["cantidad"] * it["precio_unitario"] for it in inv["items"])
+                total = sum(Decimal(str(it["cantidad"])) * Decimal(str(it["precio_unitario"])) for it in inv["items"])
                 db_gasto = DBGasto(
                     user_id=self.user_id,
                     numero_comprobante=f"DEMO-{int(inv['fecha'].timestamp())}",
@@ -184,9 +184,9 @@ class ExpenseDashboard:
                 db_gasto.items = [
                     DBGastoItem(
                         descripcion=it["descripcion"],
-                        cantidad=it["cantidad"],
-                        precio_unitario=it["precio_unitario"],
-                        total_linea=it["cantidad"] * it["precio_unitario"],
+                        cantidad=Decimal(str(it["cantidad"])),
+                        precio_unitario=Decimal(str(it["precio_unitario"])),
+                        total_linea=Decimal(str(it["cantidad"])) * Decimal(str(it["precio_unitario"])),
                         categoria=it["categoria"],
                         gasto=db_gasto,
                     ) for it in inv["items"]
@@ -487,15 +487,15 @@ class ExpenseDashboard:
                     numero_comprobante=f"EXP-{timestamp}",
                     proveedor=proveedor,
                     fecha=fecha_dt,
-                    total_gasto=float(total_recalculado),
+                    total_gasto=Decimal(str(total_recalculado)),
                     file_hash=file_hash,
                 )
                 db_gasto.items = [
                     DBGastoItem(
                         descripcion=str(row["descripcion"]),
-                        cantidad=float(row["cantidad"]),
-                        precio_unitario=float(row["precio_unitario"]),
-                        total_linea=float(row["cantidad"]) * float(row["precio_unitario"]),
+                        cantidad=Decimal(str(row["cantidad"])),
+                        precio_unitario=Decimal(str(row["precio_unitario"])),
+                        total_linea=Decimal(str(row["cantidad"])) * Decimal(str(row["precio_unitario"])),
                         categoria=str(row["categoria"]),
                         gasto=db_gasto
                     ) for _, row in df_final.iterrows()
@@ -512,24 +512,35 @@ class ExpenseDashboard:
     def _render_budget_alerts(self):
         st.subheader("🚨 Control de Presupuestos Mensuales")
 
+        now = datetime.now(timezone.utc)
+        mes_actual_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if mes_actual_start.month == 12:
+            mes_actual_end = mes_actual_start.replace(year=mes_actual_start.year + 1, month=1)
+        else:
+            mes_actual_end = mes_actual_start.replace(month=mes_actual_start.month + 1)
+        mes_actual_str = now.strftime("%Y-%m")
+
         with get_session() as db:
-            items_query = db.query(DBGastoItem).options(joinedload(DBGastoItem.gasto)).filter(
-                DBGasto.user_id == self.user_id
+            items_query = db.query(DBGastoItem).join(DBGastoItem.gasto).options(
+                contains_eager(DBGastoItem.gasto)
+            ).filter(
+                DBGasto.user_id == self.user_id,
+                DBGasto.fecha >= mes_actual_start,
+                DBGasto.fecha < mes_actual_end,
             ).all()
 
         if not items_query:
-            return
-
-        mes_actual_str = datetime.now().strftime("%Y-%m")
-        datos_completo = [
-            {
-                "Total ($)": float(it.total_linea),
-                "Categoría": it.categoria,
-                "Mes": it.gasto.fecha.strftime("%Y-%m")
-            } for it in items_query
-        ]
-        df_all = pd.DataFrame(datos_completo)
-        df_mes_actual = df_all[df_all["Mes"] == mes_actual_str]
+            datos_completo = []
+            df_mes_actual = pd.DataFrame(columns=["Categoría", "Total ($)"])
+        else:
+            datos_completo = [
+                {
+                    "Total ($)": float(it.total_linea),
+                    "Categoría": it.categoria,
+                    "Mes": mes_actual_str,
+                } for it in items_query
+            ]
+            df_mes_actual = pd.DataFrame(datos_completo)
 
         col_config, col_alertas = st.columns([1, 2])
 
@@ -600,11 +611,22 @@ class ExpenseDashboard:
             )
 
     def _render_stats(self, start_date, end_date):
+        fecha_inicio_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        fecha_fin_dt = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+
         with get_session() as db:
-            items_query = db.query(DBGastoItem).options(joinedload(DBGastoItem.gasto)).filter(
-                DBGasto.user_id == self.user_id
+            items_query = db.query(DBGastoItem).join(DBGastoItem.gasto).options(
+                contains_eager(DBGastoItem.gasto)
+            ).filter(
+                DBGasto.user_id == self.user_id,
+                DBGasto.fecha >= fecha_inicio_dt,
+                DBGasto.fecha <= fecha_fin_dt,
             ).all()
-            gastos_cabecera = db.query(DBGasto).filter(DBGasto.user_id == self.user_id).all()
+            gastos_cabecera = db.query(DBGasto).filter(
+                DBGasto.user_id == self.user_id,
+                DBGasto.fecha >= fecha_inicio_dt,
+                DBGasto.fecha <= fecha_fin_dt,
+            ).all()
 
             if not items_query:
                 st.info("Sin registros de gastos cargados en el sistema.")
@@ -633,9 +655,7 @@ class ExpenseDashboard:
                 } for g in gastos_cabecera
             ]
 
-        df_completo = pd.DataFrame(datos_tabla)
-        df_completo["Fecha_DT"] = pd.to_datetime(df_completo["Fecha"]).dt.date
-        df_base = df_completo[(df_completo["Fecha_DT"] >= start_date) & (df_completo["Fecha_DT"] <= end_date)].copy()
+        df_base = pd.DataFrame(datos_tabla)
 
         if df_base.empty:
             st.warning(f"No existen transacciones registradas en el rango desde {start_date} hasta {end_date}.")
@@ -666,7 +686,7 @@ class ExpenseDashboard:
         st.plotly_chart(fig_linea, use_container_width=True)
 
         st.markdown("---")
-        df_exportar = df_base.drop(columns=["Fecha_DT", "Mes_Periodo"])
+        df_exportar = df_base.drop(columns=["Mes_Periodo"])
 
         is_admin = st.session_state.get("admin_mode", False)
         tabs_list = [

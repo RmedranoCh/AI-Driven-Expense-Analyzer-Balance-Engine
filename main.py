@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 Base.metadata.create_all(bind=get_engine())
 
-def process_external_invoice(text: str):
+def process_external_invoice(text: str, user_id: str = "cli_default"):
     extractor = InvoiceExtractor()
     classifier = ExpenseClassifier()
     
@@ -19,15 +19,15 @@ def process_external_invoice(text: str):
     db_items = []
     
     for idx, item in enumerate(data["items"]):
-        total_linea = item["cantidad"] * item["precio_unitario"]
+        total_linea = Decimal(str(item["cantidad"])) * Decimal(str(item["precio_unitario"]))
         total_gasto += total_linea
         
         db_items.append(
             DBGastoItem(
                 descripcion=item["descripcion"],
-                cantidad=float(item["cantidad"]),
-                precio_unitario=float(item["precio_unitario"]),
-                total_linea=float(total_linea),
+                cantidad=Decimal(str(item["cantidad"])),
+                precio_unitario=Decimal(str(item["precio_unitario"])),
+                total_linea=total_linea,
                 categoria=categorias[idx] if idx < len(categorias) else "Otros"
             )
         )
@@ -35,9 +35,11 @@ def process_external_invoice(text: str):
     with get_session() as db:
         try:
             db_gasto = DBGasto(
+                user_id=user_id,
                 numero_comprobante=f"EXP-{int(datetime.now(timezone.utc).timestamp())}",
                 proveedor=data["proveedor"],
-                total_gasto=float(total_gasto)
+                fecha=datetime.now(timezone.utc),
+                total_gasto=total_gasto,
             )
             for db_item in db_items:
                 db_item.gasto = db_gasto

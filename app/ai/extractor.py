@@ -1,23 +1,13 @@
-import os
 import json
 import base64
 from datetime import datetime
-import streamlit as st
 from groq import Groq
 from decimal import Decimal
-
-def _get_groq_key():
-    key = os.getenv("GROQ_API_KEY")
-    if key:
-        return key
-    try:
-        return st.secrets["GROQ_API_KEY"]
-    except (KeyError, FileNotFoundError):
-        raise RuntimeError("GROQ_API_KEY not found in env or Streamlit secrets")
+from app.ai._common import get_groq_key
 
 class InvoiceExtractor:
     def __init__(self, vision_model: str = None, text_model: str = None):
-        self.client = Groq(api_key=_get_groq_key())
+        self.client = Groq(api_key=get_groq_key())
         self.vision_model = vision_model or "qwen/qwen3.6-27b"
         self.text_model = text_model or "openai/gpt-oss-120b"
 

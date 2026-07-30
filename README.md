@@ -116,8 +116,6 @@ expense-analyzer/
 │       └── session.py            # Conexión a BD (SQLite o PostgreSQL)
 ├── docker/
 │   └── Dockerfile                # Imagen Docker para producción
-├── templates/
-│   └── invoice_base.html         # Plantilla HTML para imprimir facturas
 ├── tests/
 │   └── unit/
 │       └── test_engine.py        # Pruebas de consolidación y precisión financiera
@@ -303,8 +301,6 @@ expense-analyzer/
 │       └── session.py            # DB connection (SQLite or PostgreSQL)
 ├── docker/
 │   └── Dockerfile                # Production Docker image
-├── templates/
-│   └── invoice_base.html         # HTML template for printable invoices
 ├── tests/
 │   └── unit/
 │       └── test_engine.py        # Consolidation and financial precision tests
