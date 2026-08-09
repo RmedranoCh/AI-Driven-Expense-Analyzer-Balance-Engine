@@ -2,18 +2,18 @@ import pytest
 from unittest.mock import patch, MagicMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.database.session import Base
+from expense_analyzer.database.session import Base
 
 
 @pytest.fixture
 def mock_groq_key():
-    with patch("app.ai._common.get_groq_key", return_value="test-key-123"):
+    with patch("expense_analyzer.ai._common.get_groq_key", return_value="test-key-123"):
         yield
 
 
 @pytest.fixture
 def mock_groq_client():
-    with patch("app.ai.extractor.Groq") as mock:
+    with patch("expense_analyzer.ai.extractor.Groq") as mock:
         instance = mock.return_value
         instance.chat.completions.create.return_value.choices = [
             MagicMock(message=MagicMock(content='{"proveedor": "mock", "items": []}'))

@@ -3,7 +3,7 @@ import base64
 from datetime import datetime
 from groq import Groq
 from decimal import Decimal
-from app.ai._common import get_groq_key
+from expense_analyzer.ai._common import get_groq_key
 
 class InvoiceExtractor:
     def __init__(self, vision_model: str = None, text_model: str = None):
@@ -54,7 +54,7 @@ class InvoiceExtractor:
         REGLA CRÍTICA PARA EL PROVEEDOR:
         Extrae el nombre del negocio o persona física que vende o presta el servicio. 
         Si el documento es un formato preimpreso de una entidad financiera (ej. Banco Unión) pero detalla una transacción 
-        u operación comercial hacia/desde un tercero o cliente, prioriza el nombre del comercio o titular real del servicio, 
+        u operación comercial hacia/de un tercero o cliente, prioriza el nombre del comercio o titular real del servicio,
         evitando colocar las siglas del banco intermediario como proveedor.
 
         REGLA PARA LA FECHA:

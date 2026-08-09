@@ -16,4 +16,4 @@ EXPOSE 8501
 
 ENV PYTHONPATH=/app
 
-CMD ["python", "-m", "streamlit", "run", "app/dashboard/main_ui.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["python", "-m", "streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]

@@ -4,9 +4,9 @@ from unittest.mock import patch, MagicMock
 
 @pytest.fixture
 def classifier():
-    with patch("app.ai.classifier.get_groq_key", return_value="key"):
-        with patch("app.ai.classifier.Groq"):
-            from app.ai.classifier import ExpenseClassifier
+    with patch("expense_analyzer.ai.classifier.get_groq_key", return_value="key"):
+        with patch("expense_analyzer.ai.classifier.Groq"):
+            from expense_analyzer.ai.classifier import ExpenseClassifier
             return ExpenseClassifier()
 
 

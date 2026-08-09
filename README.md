@@ -1,22 +1,22 @@
-# AI-Driven Expense Analyzer & Balance Engine
+# Analizador de Gastos con IA
 
-Un asistente inteligente para controlar los gastos de tu empresa. Subí una factura en PDF o una foto, y el sistema se encarga de leerla con inteligencia artificial, clasificar cada concepto en categorías contables, y mostrarte todo en un tablero interactivo con gráficos yalertas presupuestarias.
-
----
-
-## ¿Qué hace esto?
-
-Cargás un comprobante (PDF o imagen), la IA lo procesa, extrae proveedor, fecha y detalle de ítems, clasifica automáticamente cada línea en una categoría financiera, y lo guarda en la base de datos. Después podés ver gráficos de evolución mensual, controlar topes por categoría y exportar todo a Excel.
+App para no perderle el rastro a los gastos de la empresa. Subís una factura en PDF o una foto y la IA la lee, le asigna categoría contable a cada concepto y te lo muestra todo en un tablero con gráficos y alertas de presupuesto.
 
 ---
 
-## Cómo empezar
+## Qué hace
 
-### Opción 1: Con Docker (recomendado para producción)
+Subís un comprobante (PDF o imagen), la IA saca el proveedor, la fecha y los ítems, clasifica cada línea en una categoría financiera y lo guarda en la base de datos. Después tenés gráficos de evolución mensual, podés fijar topes por categoría y exportar todo a Excel.
 
-1. **Requisitos:** Docker y Docker Compose instalados, una API Key de [Groq Cloud](https://groq.com).
+---
 
-2. **Configurar variables de entorno:** Creá un archivo `.env` en la raíz del proyecto con este contenido mínimo:
+## Cómo correrlo
+
+### Con Docker (recomendado para producción)
+
+1. **Requisitos:** Docker y Docker Compose, y una API key de [Groq Cloud](https://groq.com).
+
+2. **Variables de entorno:** creá un archivo `.env` en la raíz con esto como mínimo:
 
    ```ini
    GROQ_API_KEY=tu_clave_de_groq
@@ -26,21 +26,21 @@ Cargás un comprobante (PDF o imagen), la IA lo procesa, extrae proveedor, fecha
    DATABASE_URL=postgresql://admin:secret@db:5432/invoice_engine_db
    ```
 
-3. **Levantar todo:**
+3. **Levantalo:**
 
    ```bash
    docker compose up -d --build
    ```
 
-   La app arranca en `http://localhost:8501`.
+   La app queda en `http://localhost:8501`.
 
-4. **Ejecutar pruebas:**
+4. **Correr los tests:**
 
    ```bash
-   docker compose exec app pytest tests/unit/test_engine.py -v
+   docker compose exec app pytest tests/unit -v
    ```
 
-### Opción 2: Local (sin Docker)
+### Sin Docker (local)
 
 ```bash
 python -m venv .venv
@@ -48,23 +48,23 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Copiá `.env.example` a `.env`, completá `GROQ_API_KEY`, y ejecutá:
+Copiá `.env.example` a `.env`, completá `GROQ_API_KEY` y ejecutá:
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-La app usa SQLite por defecto. Si querés PostgreSQL, configura `DATABASE_URL` en el `.env`.
+Por defecto usa SQLite. Si querés PostgreSQL, poné `DATABASE_URL` en el `.env`.
 
 ---
 
 ## Funcionalidades
 
-### Carga inteligente de facturas
-Subís un PDF o imagen, y el sistema extrae automáticamente el proveedor, la fecha y los ítems usando la API de Groq con modelos de visión (`qwen/qwen3.6-27b`) y texto (`openai/gpt-oss-120b`). Si un PDF no tiene texto extraíble, automáticamente fallbackea a procesamiento por visión.
+### Lectura de facturas
+Subís un PDF o una foto y la app extrae proveedor, fecha e ítems con la API de Groq (modelo de visión `qwen/qwen3.6-27b` y de texto `openai/gpt-oss-120b`). Si el PDF no tiene texto que se pueda extraer, automáticamente pasa a modo visión.
 
-### Clasificación por categorías
-Cada ítem se etiqueta con una de 9 categorías:
+### Categorías
+Cada ítem se etiqueta con una de estas 9 categorías:
 
 | Categoría |
 |---|
@@ -78,26 +78,26 @@ Cada ítem se etiqueta con una de 9 categorías:
 | Gastos Operativos Generales |
 | Otros |
 
-Esto se hace en lotes (batch NLP) para ahorrar tokens y reducir latencia, usando el modelo `llama-3.3-70b-versatile` con respuesta forzada en JSON.
+La clasificación se hace en lotes (batch) para gastar menos tokens y tardar menos, usando `llama-3.3-70b-versatile` pidiéndole siempre la respuesta en JSON.
 
-### Panel interactivo (Streamlit + Plotly)
+### Panel (Streamlit + Plotly)
 - Evolución mensual de gastos (gráfico de líneas)
 - Gastos por categoría (barras)
 - Distribución por proveedor (torta)
 - Métricas rápidas: total filtrado, cantidad de conceptos, proveedores distintos
 - Exportación a Excel multi-hoja (.xlsx)
 
-### Control presupuestario
-Configurás topes mensuales por categoría y el sistema te alerta visualmente cuando estás por excederte. Si te pasás del límite, la categoría se marca en rojo.
+### Presupuestos
+Ponés topes mensuales por categoría y la app te avisa visualmente cuando estás por pasarte. Si te pasás del límite, la categoría se pinta de rojo.
 
 ### Modo administrador
 Agregá `?admin=1` a la URL y entrás con tu contraseña. Desde ahí podés:
 - Cambiar los modelos de IA en caliente
-- Depurar facturas individuales
-- Ver facturas de todos los usuarios (sin límite por usuario)
+- Borrar facturas individuales
+- Ver las facturas de todos los usuarios (sin el límite por usuario)
 
-### Datos de demostración
-La primera vez que arrancás la app, se cargan automáticamente 4 facturas de ejemplo (AWS, Slack, Meta Ads, Dell) para que puedas explorar el tablero sin tener que subir nada.
+### Datos demo
+La primera vez que arranca la app carga 4 facturas de ejemplo (AWS, Slack, Meta Ads, Dell) para que puedas explorar el tablero sin subir nada.
 
 ---
 
@@ -105,36 +105,46 @@ La primera vez que arrancás la app, se cargan automáticamente 4 facturas de ej
 
 ```
 expense-analyzer/
-├── app/
-│   ├── ai/
-│   │   ├── extractor.py          # Extraer datos de facturas (PDF/imagen) con Groq
-│   │   └── classifier.py         # Clasificar ítems en categorías con Groq
-│   ├── dashboard/
-│   │   └── main_ui.py            # Interfaz completa de Streamlit
-│   └── database/
-│       ├── models.py             # Modelos ORM: DBGasto, DBGastoItem, DBPresupuestoTope
-│       └── session.py            # Conexión a BD (SQLite o PostgreSQL)
+├── expense_analyzer/              # Paquete principal
+│   ├── ai/                        # Todo lo que habla con Groq
+│   │   ├── extractor.py           # Extrae datos de facturas (PDF/imagen)
+│   │   ├── classifier.py          # Clasifica ítems en categorías
+│   │   └── _common.py             # Cliente compartido de Groq
+│   ├── database/                  # Acceso a datos
+│   │   ├── models.py              # Modelos ORM: DBGasto, DBGastoItem, DBPresupuestoTope
+│   │   └── session.py             # Conexión a BD (SQLite o PostgreSQL)
+│   └── dashboard/                 # Todo lo que se ve en pantalla
+│       ├── app.py                 # Orquestador: ExpenseDashboard
+│       ├── views.py               # Renderizado: stats, presupuesto, confirmación
+│       ├── services.py            # Lógica de negocio y acceso a datos
+│       └── styles.py              # CSS y configuración visual
+├── data/                          # Base SQLite local (se genera sola, no se versiona)
 ├── docker/
-│   └── Dockerfile                # Imagen Docker para producción
+│   └── Dockerfile                 # Imagen Docker para producción
 ├── tests/
+│   ├── conftest.py                # Fixtures compartidos
 │   └── unit/
-│       └── test_engine.py        # Pruebas de consolidación y precisión financiera
-├── docker-compose.yml            # Orquestación PostgreSQL + app
-├── streamlit_app.py              # Punto de entrada de Streamlit
-├── main.py                       # Punto de entrada por línea de comandos
-├── requirements.txt              # Dependencias de Python
-└── .env.example                  # Plantilla de variables de entorno
+│       ├── test_engine.py         # Consolidación y precisión financiera
+│       ├── test_models.py         # Modelos ORM
+│       ├── test_extractor.py      # Extracción y saneamiento de datos
+│       ├── test_classifier.py     # Clasificación por categorías
+│       └── test_common.py         # Utilidades compartidas
+├── docker-compose.yml             # Orquestación PostgreSQL + app
+├── streamlit_app.py               # Punto de entrada de Streamlit
+├── main.py                        # Punto de entrada por línea de comandos
+├── requirements.txt               # Dependencias de Python
+└── .env.example                   # Plantilla de variables de entorno
 ```
 
 ---
 
-## Arquitectura de datos
+## Cómo están modelados los datos
 
-El modelo relacional tiene tres tablas principales:
+El modelo relacional tiene tres tablas:
 
-- **DBPresupuestoTope**: guarda los límites mensuales por categoría.
+- **DBPresupuestoTope**: los límites mensuales por categoría.
 - **DBGasto**: cabecera de cada factura (proveedor, fecha, total, estado).
-- **DBGastoItem**: líneas de detalle de cada factura (descripción, cantidad, precio, categoría).
+- **DBGastoItem**: cada línea de detalle de la factura (descripción, cantidad, precio, categoría).
 
 ```
 [DBPresupuestoTope]         [DBGasto] ─── (1:N) ───► [DBGastoItem]
@@ -147,7 +157,7 @@ El modelo relacional tiene tres tablas principales:
                                                          categoria
 ```
 
-Los campos monetarios usan `Numeric(15,2)`, y toda la aritmética se hace con `Decimal` de Python con redondeo `ROUND_HALF_UP`, evitando errores de punto flotante.
+La plata se maneja con `Numeric(15,2)` y toda la aritmética con `Decimal` (redondeo `ROUND_HALF_UP`) para no comerse errores de punto flotante.
 
 ---
 
@@ -157,40 +167,38 @@ Los campos monetarios usan `Numeric(15,2)`, y toda la aritmética se hace con `D
 2. **La IA extrae** los datos estructurados (proveedor, fecha, ítems).
 3. **La IA clasifica** cada ítem en una categoría.
 4. **Revisás y confirmás** los datos antes de guardarlos.
-5. **Se guarda** en la base de datos y se actualizan los gráficos al instante.
-6. **El sistema verifica** topes presupuestarios y te alerta si corresponde.
+5. **Se guarda** en la base y los gráficos se actualizan al toque.
+6. **El sistema chequea** los topes presupuestarios y te avisa si hace falta.
 7. Si aceptás la factura, **queda bloqueada** (no se puede editar ni borrar).
 
 ---
 
-## Decisiones técnicas importantes
+## Notas técnicas
 
-- **Precisión financiera:** todo se maneja con `Decimal` en vez de `float` para evitar errores de redondeo acumulativos.
-- **Inmutabilidad contable:** una vez que una factura se marca como "Aceptado", no se puede modificar ni eliminar, garantizando la integridad de la pista de auditoría.
-- **Protección contra duplicados:** cada archivo se hashea con SHA-256; si volvés a subir la misma factura, el sistema lo detecta.
-- **Control de costos de API:** hay un límite configurable de facturas por usuario (default 5) para no abusar de Groq. El modo admin no tiene límite.
-- **Aislamiento por usuario:** cada navegador tiene un ID único (`?uid=...`), y los datos están separados por usuario.
-- **SQLite en desarrollo, PostgreSQL en producción:** el sistema detecta automáticamente qué base usar según la configuración.
+- **Precisión financiera:** todo se maneja con `Decimal` en vez de `float`, para no acumular errores de redondeo.
+- **Inmutabilidad contable:** una factura marcada como "Aceptado" no se puede modificar ni eliminar, así queda intacta la pista de auditoría.
+- **Anti duplicados:** cada archivo se hashea con SHA-256; si volvés a subir la misma factura, el sistema lo detecta.
+- **Control de costos de API:** hay un límite de facturas por usuario (default 5) para no abusar de Groq. El modo admin no tiene límite.
+- **Aislamiento por usuario:** cada navegador tiene un ID único (`?uid=...`) y los datos están separados por usuario.
+- **SQLite en dev, PostgreSQL en producción:** el sistema elige sola qué base usar según la configuración.
 
 ---
 
 ## Licencia
 
-Uso interno. Proyecto personal con fines de gestión financiera empresarial.
+Uso interno. Proyecto personal de gestión financiera empresarial.
 
 ---
 
----
+# Analizador de Gastos con IA (English)
 
-# AI-Driven Expense Analyzer & Balance Engine
-
-An intelligent assistant to keep your company's expenses under control. Upload a PDF invoice or a picture, and the system reads it with artificial intelligence, classifies each line item into financial categories, and displays everything in an interactive dashboard with charts and budget alerts.
+App to keep an eye on company expenses without going crazy. Upload a PDF invoice or a picture, and the AI reads it, assigns an accounting category to each line item, and shows everything in a dashboard with charts and budget alerts.
 
 ---
 
-## What does it do?
+## What it does
 
-You upload a receipt (PDF or image), the AI processes it, extracts the vendor, date, and line items, automatically classifies each line into a financial category, and saves it to the database. You can then view monthly trend charts, monitor budget caps per category, and export everything to Excel.
+You upload a receipt (PDF or image), the AI pulls the vendor, date and line items, classifies each line into a financial category, and stores it in the database. Then you can look at monthly trends, set caps per category, and export everything to Excel.
 
 ---
 
@@ -198,9 +206,9 @@ You upload a receipt (PDF or image), the AI processes it, extracts the vendor, d
 
 ### Option 1: Docker (recommended for production)
 
-1. **Prerequisites:** Docker and Docker Compose installed, and a [Groq Cloud](https://groq.com) API key.
+1. **Prerequisites:** Docker and Docker Compose, plus a [Groq Cloud](https://groq.com) API key.
 
-2. **Environment variables:** Create a `.env` file in the project root with at least:
+2. **Environment variables:** create a `.env` file in the project root with at least:
 
    ```ini
    GROQ_API_KEY=your_groq_key
@@ -210,18 +218,18 @@ You upload a receipt (PDF or image), the AI processes it, extracts the vendor, d
    DATABASE_URL=postgresql://admin:secret@db:5432/invoice_engine_db
    ```
 
-3. **Launch everything:**
+3. **Launch it:**
 
    ```bash
    docker compose up -d --build
    ```
 
-   The app will be available at `http://localhost:8501`.
+   The app will be at `http://localhost:8501`.
 
-4. **Run tests:**
+4. **Run the tests:**
 
    ```bash
-   docker compose exec app pytest tests/unit/test_engine.py -v
+   docker compose exec app pytest tests/unit -v
    ```
 
 ### Option 2: Local (without Docker)
@@ -239,17 +247,17 @@ Copy `.env.example` to `.env`, fill in `GROQ_API_KEY`, and run:
 streamlit run streamlit_app.py
 ```
 
-The app uses SQLite by default. If you want PostgreSQL, set `DATABASE_URL` in your `.env`.
+It uses SQLite by default. If you want PostgreSQL, set `DATABASE_URL` in your `.env`.
 
 ---
 
 ## Features
 
-### Smart invoice ingestion
-Upload a PDF or image, and the system automatically extracts the vendor, date, and line items using the Groq API with vision models (`qwen/qwen3.6-27b`) and text models (`openai/gpt-oss-120b`). If a PDF has no extractable text, it automatically falls back to vision processing.
+### Smart invoice reading
+Upload a PDF or image and the app extracts the vendor, date and items using the Groq API (vision model `qwen/qwen3.6-27b`, text model `openai/gpt-oss-120b`). If a PDF has no extractable text, it automatically falls back to vision processing.
 
-### Category classification
-Each item is tagged with one of 9 categories:
+### Categories
+Each item gets tagged with one of these 9 categories:
 
 | Category |
 |---|
@@ -263,26 +271,26 @@ Each item is tagged with one of 9 categories:
 | General Operating Expenses |
 | Others |
 
-This is done in batches (batch NLP) to save tokens and reduce latency, using the `llama-3.3-70b-versatile` model with forced JSON responses.
+Classification runs in batches to save tokens and reduce latency, using `llama-3.3-70b-versatile` with forced JSON responses.
 
-### Interactive dashboard (Streamlit + Plotly)
+### Dashboard (Streamlit + Plotly)
 - Monthly expense trends (line chart)
 - Expenses by category (bar chart)
-- Distribution by vendor (pie chart)
-- Quick metrics: total filtered spend, concept count, distinct vendors
+- Share by vendor (pie chart)
+- Quick metrics: filtered total, concept count, distinct vendors
 - Multi-sheet Excel export (.xlsx)
 
 ### Budget control
-Set monthly caps per category and get visual alerts when you are about to exceed them. Categories that exceed their limit are highlighted in red.
+Set monthly caps per category and get visual warnings when you're about to go over. Categories over their limit turn red.
 
 ### Admin mode
 Add `?admin=1` to the URL and log in with your password. From there you can:
 - Swap AI models on the fly
-- Purge individual invoices
-- View all users' invoices (no per-user limit)
+- Delete individual invoices
+- See every user's invoices (no per-user limit)
 
 ### Demo data
-On first launch, the app automatically seeds 4 sample invoices (AWS, Slack, Meta Ads, Dell) so you can explore the dashboard without uploading anything.
+On first launch, the app seeds 4 sample invoices (AWS, Slack, Meta Ads, Dell) so you can poke around the dashboard without uploading anything.
 
 ---
 
@@ -290,34 +298,44 @@ On first launch, the app automatically seeds 4 sample invoices (AWS, Slack, Meta
 
 ```
 expense-analyzer/
-├── app/
-│   ├── ai/
-│   │   ├── extractor.py          # Extract invoice data (PDF/image) via Groq
-│   │   └── classifier.py         # Classify items into categories via Groq
-│   ├── dashboard/
-│   │   └── main_ui.py            # Complete Streamlit interface
-│   └── database/
-│       ├── models.py             # ORM models: DBGasto, DBGastoItem, DBPresupuestoTope
-│       └── session.py            # DB connection (SQLite or PostgreSQL)
+├── expense_analyzer/              # Main package
+│   ├── ai/                        # Everything that talks to Groq
+│   │   ├── extractor.py           # Extracts invoice data (PDF/image)
+│   │   ├── classifier.py          # Classifies items into categories
+│   │   └── _common.py             # Shared Groq client
+│   ├── database/                  # Data access
+│   │   ├── models.py              # ORM models: DBGasto, DBGastoItem, DBPresupuestoTope
+│   │   └── session.py             # DB connection (SQLite or PostgreSQL)
+│   └── dashboard/                 # Everything you see on screen
+│       ├── app.py                 # Orchestrator: ExpenseDashboard
+│       ├── views.py               # Rendering: stats, budget, confirmation
+│       ├── services.py            # Business logic and data access
+│       └── styles.py              # CSS and visual config
+├── data/                          # Local SQLite DB (auto-generated, not versioned)
 ├── docker/
-│   └── Dockerfile                # Production Docker image
+│   └── Dockerfile                 # Production Docker image
 ├── tests/
+│   ├── conftest.py                # Shared fixtures
 │   └── unit/
-│       └── test_engine.py        # Consolidation and financial precision tests
-├── docker-compose.yml            # PostgreSQL + app orchestration
-├── streamlit_app.py              # Streamlit entry point
-├── main.py                       # CLI entry point
-├── requirements.txt              # Python dependencies
-└── .env.example                  # Environment variable template
+│       ├── test_engine.py         # Consolidation and financial precision
+│       ├── test_models.py         # ORM models
+│       ├── test_extractor.py      # Extraction and sanitization
+│       ├── test_classifier.py     # Category classification
+│       └── test_common.py         # Shared utilities
+├── docker-compose.yml             # PostgreSQL + app orchestration
+├── streamlit_app.py               # Streamlit entry point
+├── main.py                        # CLI entry point
+├── requirements.txt               # Python dependencies
+└── .env.example                   # Environment variable template
 ```
 
 ---
 
 ## Data architecture
 
-The relational model has three main tables:
+The relational model has three tables:
 
-- **DBPresupuestoTope**: stores monthly limits per category.
+- **DBPresupuestoTope**: monthly limits per category.
 - **DBGasto**: invoice header (vendor, date, total, status).
 - **DBGastoItem**: line items for each invoice (description, quantity, price, category).
 
@@ -332,7 +350,7 @@ The relational model has three main tables:
                                                          categoria
 ```
 
-Monetary fields use `Numeric(15,2)`, and all arithmetic uses Python's `Decimal` with `ROUND_HALF_UP` rounding, avoiding floating-point errors.
+Money is stored as `Numeric(15,2)` and all math runs on Python `Decimal` with `ROUND_HALF_UP`, so floating-point errors never sneak in.
 
 ---
 
@@ -341,24 +359,24 @@ Monetary fields use `Numeric(15,2)`, and all arithmetic uses Python's `Decimal` 
 1. **You upload** a PDF or image from the dashboard.
 2. **The AI extracts** structured data (vendor, date, items).
 3. **The AI classifies** each item into a category.
-4. **You review and confirm** the data before saving.
+4. **You review and confirm** before saving.
 5. **It gets saved** to the database and the charts update instantly.
 6. **The system checks** budget caps and alerts you if needed.
-7. If you accept the invoice, **it becomes locked** (cannot be edited or deleted).
+7. If you accept the invoice, **it locks** (can't be edited or deleted).
 
 ---
 
-## Key technical decisions
+## Technical notes
 
-- **Financial precision:** everything uses `Decimal` instead of `float` to avoid cumulative rounding errors.
-- **Accounting immutability:** once an invoice is marked as "Accepted", it cannot be modified or deleted, guaranteeing audit trail integrity.
-- **Duplicate protection:** each file is hashed with SHA-256; re-uploading the same invoice is detected automatically.
-- **API cost control:** a configurable per-user invoice limit (default 5) prevents excessive Groq usage. Admin mode bypasses this limit.
-- **Per-user isolation:** each browser session gets a unique ID (`?uid=...`), and data is scoped per user.
-- **SQLite in development, PostgreSQL in production:** the system auto-detects which database to use based on configuration.
+- **Financial precision:** everything uses `Decimal` instead of `float` so rounding errors don't pile up.
+- **Accounting immutability:** once an invoice is marked "Accepted", it can't be modified or deleted, keeping the audit trail intact.
+- **Duplicate protection:** every file is hashed with SHA-256; re-uploading the same invoice gets caught automatically.
+- **API cost control:** a configurable per-user invoice limit (default 5) keeps Groq usage in check. Admin mode bypasses it.
+- **Per-user isolation:** each browser session gets a unique ID (`?uid=...`) and data is scoped per user.
+- **SQLite in dev, PostgreSQL in prod:** the system picks the database by itself based on the config.
 
 ---
 
 ## License
 
-Internal use. Personal project for business financial management purposes.
+Internal use. Personal project for business financial management.

@@ -41,7 +41,7 @@ def get_engine():
         raise Exception("No se pudo conectar a la DB.")
     else:
         _using_sqlite = True
-        db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        db_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
         os.makedirs(db_dir, exist_ok=True)
         db_path = os.path.join(db_dir, "expenses.db")
         _engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})

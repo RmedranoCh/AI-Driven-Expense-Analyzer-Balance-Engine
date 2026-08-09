@@ -5,9 +5,9 @@ from unittest.mock import patch, MagicMock
 
 @pytest.fixture
 def extractor():
-    with patch("app.ai.extractor.get_groq_key", return_value="key"):
-        with patch("app.ai.extractor.Groq"):
-            from app.ai.extractor import InvoiceExtractor
+    with patch("expense_analyzer.ai.extractor.get_groq_key", return_value="key"):
+        with patch("expense_analyzer.ai.extractor.Groq"):
+            from expense_analyzer.ai.extractor import InvoiceExtractor
             return InvoiceExtractor()
 
 

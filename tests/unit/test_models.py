@@ -1,7 +1,7 @@
 import pytest
 from decimal import Decimal
 from datetime import datetime, timezone
-from app.database.models import DBGasto, DBGastoItem, DBPresupuestoTope
+from expense_analyzer.database.models import DBGasto, DBGastoItem, DBPresupuestoTope
 
 
 class TestDBGasto:

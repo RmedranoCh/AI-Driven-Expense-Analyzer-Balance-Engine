@@ -2,7 +2,7 @@ import json
 from groq import Groq
 from dotenv import load_dotenv
 from typing import List
-from app.ai._common import get_groq_key
+from expense_analyzer.ai._common import get_groq_key
 
 load_dotenv()
 
