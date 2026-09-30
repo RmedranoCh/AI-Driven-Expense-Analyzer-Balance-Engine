@@ -5,7 +5,7 @@ from expense_analyzer.ai.extractor import InvoiceExtractor
 from expense_analyzer.database.models import DBGasto
 from expense_analyzer.database.session import get_session, initialize_database
 from expense_analyzer.dashboard.services import save_approved_invoice
-from expense_analyzer.money import to_money
+from expense_analyzer.money import invoice_total
 
 initialize_database()
 
@@ -32,7 +32,7 @@ def process_external_invoice(text: str, user_id: str = "cli_default"):
         print("? No se detectaron items en el texto, nada que registrar.")
         return
 
-    total_gasto = to_money(sum(to_money(i["cantidad"]) * to_money(i["precio_unitario"]) for i in items))
+    total_gasto = invoice_total(items)
 
     numero = save_approved_invoice(
         user_id=user_id,

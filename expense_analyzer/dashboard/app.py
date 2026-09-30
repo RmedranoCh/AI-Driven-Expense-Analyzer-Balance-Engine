@@ -11,6 +11,7 @@ from expense_analyzer.ai._common import (
     MODELO_CLASIFICACION_POR_DEFECTO,
     MODELO_TEXTO_POR_DEFECTO,
     MODELO_VISION_POR_DEFECTO,
+    MODELOS_TEXTO_SOPORTADOS,
 )
 from expense_analyzer.dashboard import services
 from expense_analyzer.dashboard import views
@@ -193,10 +194,32 @@ class ExpenseDashboard:
                     key="admin_classifier",
                 )
                 if st.button("Aplicar modelos", key="admin_apply", type="primary"):
-                    st.session_state["vision_model"] = vision_model
-                    st.session_state["text_model"] = text_model
-                    st.session_state["classifier_model"] = classifier_model
-                    st.success("Modelos actualizados. Recarga la pagina para aplicar cambios.")
+                    candidatos = {
+                        "Visión": vision_model,
+                        "Texto": text_model,
+                        "Clasificación": classifier_model,
+                    }
+                    desconocidos = {
+                        etiqueta: valor
+                        for etiqueta, valor in candidatos.items()
+                        if valor not in MODELOS_TEXTO_SOPORTADOS
+                    }
+                    if desconocidos:
+                        detalle = ", ".join(
+                            f"{etiqueta}: '{valor}'"
+                            for etiqueta, valor in desconocidos.items()
+                        )
+                        st.error(
+                            f"Modelo no soportado ({detalle}). "
+                            "Disponibles: " + ", ".join(MODELOS_TEXTO_SOPORTADOS)
+                        )
+                    else:
+                        st.session_state["vision_model"] = vision_model
+                        st.session_state["text_model"] = text_model
+                        st.session_state["classifier_model"] = classifier_model
+                        st.success(
+                            "Modelos actualizados. Recarga la pagina para aplicar cambios."
+                        )
 
         if st.session_state.get("processing"):
             st.markdown(

@@ -1,10 +1,13 @@
 import json
+import logging
 from groq import Groq
 from dotenv import load_dotenv
 from typing import List
 from expense_analyzer.ai._common import MODELO_CLASIFICACION_POR_DEFECTO, get_groq_key
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 class ExpenseClassifier:    
     def __init__(self, model: str = None):
@@ -66,5 +69,5 @@ class ExpenseClassifier:
             return resultado
 
         except Exception as e:
-            print(f"❌ Error en clasificación en lote: {e}")
+            logger.exception("Error en clasificacion en lote con %s: %s", self.model, e)
             return ["Otros"] * len(descripciones)

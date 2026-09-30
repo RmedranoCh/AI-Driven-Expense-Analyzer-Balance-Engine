@@ -52,7 +52,13 @@ def _is_sqlite(url: str) -> bool:
 
 
 def _is_memory_db(url: str) -> bool:
-    return url.endswith(":memory:") or url.endswith("")
+    """Detecta SQLite en memoria (`sqlite://`, `sqlite:///:memory:`)."""
+    if ":memory:" in url:
+        return True
+    _, separator, db_path = url.partition(":///")
+    if not separator:
+        return True
+    return db_path.strip("/") == ""
 
 
 def _ensure_sqlite_directory(url: str) -> str:

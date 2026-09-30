@@ -56,6 +56,29 @@ class TestOcultamientoDeCredenciales:
         assert db_session._redact_url("sqlite:///data/app.db") == "sqlite:///data/app.db"
 
 
+class TestDeteccionMemoria:
+    def test_archivo_no_es_memoria(self):
+        assert db_session._is_memory_db("sqlite:///data/expenses.db") is False
+
+    def test_ruta_absoluta_no_es_memoria(self):
+        assert db_session._is_memory_db("sqlite:////var/lib/app.db") is False
+
+    def test_memoria_explicita(self):
+        assert db_session._is_memory_db("sqlite:///:memory:") is True
+
+    def test_memoria_con_query(self):
+        assert db_session._is_memory_db("sqlite:///:memory:?cache=shared") is True
+
+    def test_sqlite_sin_ruta(self):
+        assert db_session._is_memory_db("sqlite://") is True
+
+    def test_motor_archivo_activa_wal(self):
+        db_session.initialize_database()
+        with db_session.get_engine().connect() as conn:
+            journal = conn.execute(db_session.text("PRAGMA journal_mode")).scalar()
+        assert str(journal).lower() == "wal"
+
+
 class TestInitializeDatabase:
     def test_crea_todas_las_tablas(self):
         db_session.initialize_database()

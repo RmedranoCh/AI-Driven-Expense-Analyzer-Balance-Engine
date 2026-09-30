@@ -1,9 +1,12 @@
 import json
 import base64
+import logging
 from datetime import datetime
 from groq import Groq
 from expense_analyzer.ai._common import MODELO_VISION_POR_DEFECTO, MODELO_TEXTO_POR_DEFECTO, get_groq_key
 from expense_analyzer.money import to_cantidad, to_money
+
+logger = logging.getLogger(__name__)
 
 class InvoiceExtractor:
     def __init__(self, vision_model: str = None, text_model: str = None):
@@ -82,8 +85,8 @@ class InvoiceExtractor:
             )
             return self._sanitize_json_data(json.loads(response.choices[0].message.content))
         except Exception as e:
-            print(f"❌ Error en Groq: {e}")
-            raise e
+            logger.exception("Error al llamar a Groq con el modelo %s: %s", model, e)
+            raise
 
     def _sanitize_json_data(self, raw_data: dict) -> dict:
         def parse_date(v):
