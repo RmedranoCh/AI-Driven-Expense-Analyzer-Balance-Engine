@@ -13,6 +13,7 @@ from expense_analyzer.dashboard.services import (
     get_secret,
     get_admin_pepper,
     get_max_invoices_per_user,
+    get_storage_warning,
     initialize_database,
     get_user_id,
     count_user_invoices,
@@ -21,12 +22,17 @@ from expense_analyzer.dashboard.services import (
     build_pending_payload,
     save_approved_invoice,
 )
+from expense_analyzer.database.session import DatabaseUnavailableError
 
 
 class ExpenseDashboard:
     def __init__(self):
         self.extractor, self.classifier = get_ai_tools()
-        initialize_database()
+        try:
+            initialize_database()
+        except DatabaseUnavailableError as exc:
+            st.error(f"**Base de datos no disponible.** {exc}")
+            st.stop()
         self.user_id = get_user_id()
 
         if "processed_hashes" not in st.session_state:
@@ -89,10 +95,14 @@ class ExpenseDashboard:
                 st.session_state.processed_hashes = set()
                 st.rerun()
 
+        storage_warning = get_storage_warning()
+        if storage_warning:
+            st.sidebar.warning(f"⚠️ {storage_warning}")
+
         if is_admin:
             st.sidebar.markdown("---")
             st.sidebar.markdown(
-                f"<small>👑 Modo administrador activo</small>", unsafe_allow_html=True
+                "<small>👑 Modo administrador activo</small>", unsafe_allow_html=True
             )
             if st.sidebar.button("🚪 Cerrar sesión admin", key="admin_logout"):
                 del st.session_state["admin_mode"]

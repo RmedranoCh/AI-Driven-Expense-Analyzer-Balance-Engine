@@ -1,11 +1,11 @@
 from expense_analyzer.ai.extractor import InvoiceExtractor
 from expense_analyzer.ai.classifier import ExpenseClassifier
-from expense_analyzer.database.session import get_session, Base, get_engine
+from expense_analyzer.database.session import get_session, initialize_database
 from expense_analyzer.database.models import DBGasto, DBGastoItem
 from decimal import Decimal
 from datetime import datetime, timezone
 
-Base.metadata.create_all(bind=get_engine())
+initialize_database()
 
 
 def process_external_invoice(text: str, user_id: str = "cli_default"):

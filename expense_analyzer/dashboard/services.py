@@ -4,11 +4,16 @@ import streamlit as st
 from decimal import Decimal
 from datetime import datetime, timezone, date, timedelta
 from dotenv import load_dotenv
+from streamlit.errors import StreamlitAPIException
 from sqlalchemy import func
 
 from expense_analyzer.ai.extractor import InvoiceExtractor
 from expense_analyzer.ai.classifier import ExpenseClassifier
-from expense_analyzer.database.session import get_session, Base, get_engine
+from expense_analyzer.database.session import (
+    get_fallback_reason,
+    get_session,
+    initialize_database,
+)
 from expense_analyzer.database.models import DBGasto, DBGastoItem, DBPresupuestoTope
 
 load_dotenv()
@@ -20,7 +25,7 @@ def get_secret(key: str, default: str = "") -> str:
         return val
     try:
         return st.secrets[key]
-    except (KeyError, FileNotFoundError):
+    except (KeyError, FileNotFoundError, StreamlitAPIException):
         return default
 
 
@@ -32,8 +37,8 @@ def get_max_invoices_per_user() -> int:
     return int(get_secret("MAX_INVOICES_PER_USER", "5"))
 
 
-def initialize_database() -> None:
-    Base.metadata.create_all(bind=get_engine())
+def get_storage_warning() -> str:
+    return get_fallback_reason() or ""
 
 
 def get_user_id() -> str:
