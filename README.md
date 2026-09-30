@@ -6,7 +6,7 @@ Aplicación para no perderle el rastro a los gastos de una empresa. Subes una fa
 
 ## Características
 
-- **Lectura de facturas**: la app extrae proveedor, fecha e ítems usando la API de Groq (modelo de visión `qwen/qwen3.6-27b` y de texto `openai/gpt-oss-120b`). Si un PDF no tiene texto extraíble, pasa automáticamente a modo visión.
+- **Lectura de facturas**: la app extrae proveedor, fecha e ítems usando la API de Groq (modelo de visión `qwen/qwen3.8-27b` y de texto `openai/gpt-oss-120b`). Si un PDF no tiene texto extraíble, pasa automáticamente a modo visión.
 - **Clasificación contable**: cada ítem se etiqueta con una de estas 9 categorías:
 
   | Categoría |
@@ -21,11 +21,11 @@ Aplicación para no perderle el rastro a los gastos de una empresa. Subes una fa
   | Gastos Operativos Generales |
   | Otros |
 
-  La clasificación se hace en lotes para gastar menos tokens, usando `llama-3.3-70b-versatile` con respuesta en JSON.
+  La clasificación se hace en lotes para gastar menos tokens, usando `openai/gpt-oss-120b` con respuesta en JSON.
 - **Tablero (Streamlit + Plotly)**: evolución mensual de gastos, gastos por categoría, distribución por proveedor, métricas rápidas y exportación a Excel multi-hoja.
 - **Presupuestos**: topes mensuales por categoría. Si te pasas del límite, la categoría se pinta de rojo.
 - **Modo administrador**: con `?admin=1` en la URL puedes cambiar los modelos de IA en caliente, borrar facturas y ver las de todos los usuarios.
-- **Datos demo**: al primer arranque carga 4 facturas de ejemplo (AWS, Slack, Meta Ads, Dell) para explorar el tablero sin subir nada.
+- **Datos demo**: al primer arranque carga 7 facturas de ejemplo (AWS, Slack, Meta Ads, Dell, agencia, viajes y educación) con fechas repartidas por varios meses, para explorar el tablero sin subir nada. Los datos demo no consumen el límite de facturas reales.
 
 ---
 
@@ -106,7 +106,7 @@ Por defecto usa SQLite. Si quieres PostgreSQL, pon `DATABASE_URL` en el `.env`.
 El modelo relacional tiene tres tablas:
 
 - **DBPresupuestoTope**: límites mensuales por categoría.
-- **DBGasto**: cabecera de cada factura (proveedor, fecha, total, estado).
+- **DBGasto**: cabecera de cada factura (proveedor, fecha, total, número de comprobante, marca demo).
 - **DBGastoItem**: cada línea de detalle de la factura (descripción, cantidad, precio, categoría).
 
 ```
@@ -125,16 +125,17 @@ La plata se maneja con `Numeric(15,2)` y toda la aritmética con `Decimal` (redo
 4. **Revisas y confirmas** antes de guardar.
 5. **Se guarda** en la base y los gráficos se actualizan al instante.
 6. **El sistema revisa** los topes presupuestarios y te avisa si hace falta.
-7. Si aceptas la factura, **queda bloqueada** (no se puede editar ni borrar).
+7. **Queda registrada** en el balance como historial. El administrador puede eliminar facturas desde el panel.
 
 ---
 
 ## Notas técnicas
 
 - **Precisión financiera**: todo se maneja con `Decimal` en vez de `float`, para no acumular errores de redondeo.
-- **Inmutabilidad contable**: una factura marcada como "Aceptado" no se puede modificar ni eliminar; la pista de auditoría queda intacta.
+- **Trazabilidad**: cada factura guardada conserva su número de comprobante, fecha y detalle de líneas en la base de datos.
 - **Anti duplicados**: cada archivo se hashea con SHA-256; si subes la misma factura dos veces, el sistema lo detecta.
-- **Control de costos de API**: límite de facturas por usuario (default 5). El modo admin no tiene límite.
+- **Control de costos de API**: límite de facturas por usuario (default 5, configurable con `MAX_INVOICES_PER_USER`). El modo admin no tiene límite y los datos demo no descuentan cupo.
+- **Validación de archivos**: se aceptan PDF, PNG, JPG y JPEG de hasta 10 MB; los PDF de más de 25 páginas se rechazan antes de gastar tokens.
 - **Aislamiento por usuario**: cada navegador tiene un ID único (`?uid=...`) y los datos están separados por usuario.
 - **SQLite en dev, PostgreSQL en producción**: el sistema elige la base según la configuración.
 
@@ -143,10 +144,12 @@ La plata se maneja con `Numeric(15,2)` y toda la aritmética con `Decimal` (redo
 ## Tests
 
 ```bash
-docker compose exec app pytest tests/unit -v
+.venv\Scripts\python.exe -m pytest tests -q     # Windows
+python -m pytest tests -q                       # Linux/macOS
+docker compose exec app pytest tests/unit -v    # dentro de Docker
 ```
 
-Los tests cubren la consolidación y precisión financiera, los modelos ORM, la extracción y saneamiento de datos, la clasificación por categorías y las utilidades compartidas.
+Los tests cubren precisión financiera y redondeo, consolidación de gastos, los modelos ORM y la migración de esquema, la extracción y saneamiento de datos, la clasificación por categorías, la siembra de datos demo, el límite de facturas y la unicidad de comprobantes.
 
 ---
 

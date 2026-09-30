@@ -2,14 +2,14 @@ import json
 import base64
 from datetime import datetime
 from groq import Groq
-from decimal import Decimal
-from expense_analyzer.ai._common import get_groq_key
+from expense_analyzer.ai._common import MODELO_VISION_POR_DEFECTO, MODELO_TEXTO_POR_DEFECTO, get_groq_key
+from expense_analyzer.money import to_cantidad, to_money
 
 class InvoiceExtractor:
     def __init__(self, vision_model: str = None, text_model: str = None):
         self.client = Groq(api_key=get_groq_key())
-        self.vision_model = vision_model or "qwen/qwen3.6-27b"
-        self.text_model = text_model or "openai/gpt-oss-120b"
+        self.vision_model = vision_model or MODELO_VISION_POR_DEFECTO
+        self.text_model = text_model or MODELO_TEXTO_POR_DEFECTO
 
     def extract_from_text(self, text: str) -> dict:
         prompt = f"""
@@ -86,12 +86,6 @@ class InvoiceExtractor:
             raise e
 
     def _sanitize_json_data(self, raw_data: dict) -> dict:
-        def clean_decimal(v):
-            if v is None: return Decimal("0.00")
-            clean_str = ''.join(c for c in str(v).replace('$', '').replace(',', '').strip() if c.isdigit() or c == '.')
-            try: return Decimal(clean_str) if clean_str else Decimal("0.00")
-            except Exception: return Decimal("0.00")
-
         def parse_date(v):
             if not v or str(v).lower() in ("null", "none", ""):
                 return None
@@ -108,8 +102,8 @@ class InvoiceExtractor:
             "items": [
                 {
                     "descripcion": str(item.get("descripcion", "Concepto General")),
-                    "cantidad": clean_decimal(item.get("cantidad", 1)),
-                    "precio_unitario": clean_decimal(item.get("precio_unitario", 0))
+                    "cantidad": to_cantidad(item.get("cantidad", 1)),
+                    "precio_unitario": to_money(item.get("precio_unitario", 0))
                 } for item in raw_data.get("items", [])
             ]
         }

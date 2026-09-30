@@ -2,63 +2,91 @@ import io
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from datetime import datetime, timezone, date
+from datetime import datetime, date
+from decimal import Decimal
 from sqlalchemy.orm import contains_eager
 
+from expense_analyzer.analytics import (
+    COLUMNAS_CABECERA,
+    COLUMNAS_DETALLE,
+    consolidar_gastos,
+    gasto_por_categoria,
+    gasto_por_proveedor,
+    resumen_mensual,
+)
 from expense_analyzer.database.session import get_session
-from expense_analyzer.database.models import DBGasto, DBGastoItem
+from expense_analyzer.database.models import DBGasto, DBGastoItem, utc_now
 from expense_analyzer.dashboard.services import delete_gasto, save_budget_topes
+from expense_analyzer.money import to_money
 
 
 def _no_items_message() -> None:
     st.info("Sin registros de gastos cargados en el sistema.")
 
 
-def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) -> None:
-    fecha_inicio_dt = datetime.combine(fecha_inicio, datetime.min.time()).replace(tzinfo=timezone.utc)
-    fecha_fin_dt = datetime.combine(fecha_fin, datetime.max.time()).replace(tzinfo=timezone.utc)
+@st.cache_data(show_spinner=False)
+def _reporte_excel(historial_json: str, consolidado_json: str) -> bytes:
+    historial = pd.read_json(io.StringIO(historial_json), orient="split")
+    consolidado = pd.read_json(io.StringIO(consolidado_json), orient="split")
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        historial.to_excel(writer, index=False, sheet_name="📋 Historial Filtrado")
+        consolidado.to_excel(writer, index=False, sheet_name="Balance Consolidado")
+    return buffer.getvalue()
 
+
+def _cargar_items(user_id: str, desde: datetime, hasta: datetime):
     with get_session() as db:
-        items_query = (
+        items = (
             db.query(DBGastoItem)
             .join(DBGastoItem.gasto)
             .options(contains_eager(DBGastoItem.gasto))
             .filter(
                 DBGasto.user_id == user_id,
-                DBGasto.fecha >= fecha_inicio_dt,
-                DBGasto.fecha <= fecha_fin_dt,
+                DBGasto.fecha >= desde,
+                DBGasto.fecha <= hasta,
             )
             .all()
         )
-        gastos_cabecera = (
+        gastos = (
             db.query(DBGasto)
             .filter(
                 DBGasto.user_id == user_id,
-                DBGasto.fecha >= fecha_inicio_dt,
-                DBGasto.fecha <= fecha_fin_dt,
+                DBGasto.fecha >= desde,
+                DBGasto.fecha <= hasta,
             )
             .all()
         )
+    return items, gastos
 
-        if not items_query:
-            _no_items_message()
-            return
 
-        datos_tabla = [
-            {
-                "ID Comprobante": item.gasto.numero_comprobante,
-                "Proveedor": item.gasto.proveedor,
-                "Fecha": item.gasto.fecha.strftime("%Y-%m-%d"),
-                "Concepto": item.descripcion,
-                "Cantidad": float(item.cantidad),
-                "Precio U. ($)": float(item.precio_unitario),
-                "Total ($)": float(item.total_linea),
-                "Categoría": item.categoria,
-            }
-            for item in items_query
-        ]
+def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) -> None:
+    fecha_inicio_dt = datetime.combine(fecha_inicio, datetime.min.time())
+    fecha_fin_dt = datetime.combine(fecha_fin, datetime.max.time())
 
-        datos_cabecera_lista = [
+    items_query, gastos_cabecera = _cargar_items(user_id, fecha_inicio_dt, fecha_fin_dt)
+
+    if not items_query:
+        _no_items_message()
+        return
+
+    datos_tabla = [
+        {
+            "Comprobante": item.gasto.numero_comprobante,
+            "Proveedor": item.gasto.proveedor,
+            "Fecha": item.gasto.fecha.strftime("%Y-%m-%d"),
+            "Concepto": item.descripcion,
+            "Cantidad": float(item.cantidad),
+            "Precio U. ($)": float(item.precio_unitario),
+            "Total ($)": float(item.total_linea),
+            "Categoría": item.categoria,
+        }
+        for item in items_query
+    ]
+
+    is_admin = st.session_state.get("admin_mode", False)
+    datos_cabecera_lista = (
+        [
             {
                 "id_db": g.id,
                 "Comprobante": g.numero_comprobante,
@@ -68,8 +96,11 @@ def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) ->
             }
             for g in gastos_cabecera
         ]
+        if is_admin
+        else []
+    )
 
-    df_base = pd.DataFrame(datos_tabla)
+    df_base = pd.DataFrame(datos_tabla, columns=COLUMNAS_DETALLE)
 
     if df_base.empty:
         st.warning(
@@ -77,53 +108,37 @@ def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) ->
         )
         return
 
-    df_agrupado = (
-        df_base.groupby(["Concepto", "Categoría", "Proveedor"])
-        .agg(
-            Repeticiones=("Total ($)", "count"),
-            Cantidad_Acumulada=("Cantidad", "sum"),
-            Monto_Total_Gastado=("Total ($)", "sum"),
-        )
-        .reset_index()
-        .sort_values(by="Monto_Total_Gastado", ascending=False)
-    )
+    df_agrupado = consolidar_gastos(df_base)
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Gasto Filtrado Acumulado", f"${df_base['Total ($)'].sum():,.2f}")
+    col1.metric("Gasto Filtrado Acumulado", f"${to_money(df_base['Total ($)'].sum()):,.2f}")
     col2.metric("Conceptos Distintos en Rango", len(df_agrupado))
     col3.metric("Proveedores en Rango", df_base["Proveedor"].nunique())
 
     st.markdown("---")
     st.markdown("### 📈 Evolución Temporal de Salidas")
-    df_base["Mes_Periodo"] = pd.to_datetime(df_base["Fecha"]).dt.to_period("M").astype(str)
-    df_mensual = (
-        df_base.groupby("Mes_Periodo")["Total ($)"]
-        .sum()
-        .reset_index()
-        .sort_values(by="Mes_Periodo")
-    )
+    df_mensual = resumen_mensual(df_base)
 
-    fig_linea = px.line(
-        df_mensual,
-        x="Mes_Periodo",
-        y="Total ($)",
-        markers=True,
-        labels={
-            "Mes_Periodo": "Mes de Operación",
-            "Total ($)": "Egresos Consolidados ($)",
-        },
-    )
-    fig_linea.update_layout(hovermode="x unified", template="plotly_white")
-    fig_linea.update_traces(line_color="#c0392b", line_width=3, marker=dict(size=8))
-    st.plotly_chart(fig_linea, use_container_width=True)
+    if not df_mensual.empty:
+        fig_linea = px.line(
+            df_mensual,
+            x="Mes_Periodo",
+            y="Total ($)",
+            markers=True,
+            labels={
+                "Mes_Periodo": "Mes de Operación",
+                "Total ($)": "Egresos Consolidados ($)",
+            },
+        )
+        fig_linea.update_layout(hovermode="x unified", template="plotly_white")
+        fig_linea.update_traces(line_color="#c0392b", line_width=3, marker=dict(size=8))
+        st.plotly_chart(fig_linea, width="stretch")
 
     st.markdown("---")
-    df_exportar = df_base.drop(columns=["Mes_Periodo"])
 
-    is_admin = st.session_state.get("admin_mode", False)
     tabs_list = [
         "📊 Conceptos Consolidados (Agrupados)",
-        "📋 Historial Filtrado",
+        "Historial Filtrado",
         "📐 Participación de Rubros",
     ]
     if is_admin:
@@ -134,33 +149,30 @@ def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) ->
 
     with tab1:
         st.markdown(f"### 🔄 Gastos Agrupados Automáticamente ({fecha_inicio} a {fecha_fin})")
-        st.dataframe(df_agrupado, use_container_width=True, hide_index=True)
+        st.dataframe(df_agrupado, width="stretch", hide_index=True)
 
     with tab2:
         col_header, col_download = st.columns([4, 1])
         col_header.markdown("### 📜 Transacciones Extraídas en el Periodo")
 
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df_exportar.to_excel(writer, index=False, sheet_name="Historial Filtrado")
-            df_agrupado.to_excel(writer, index=False, sheet_name="Balance Consolidado")
-
         col_download.download_button(
             label="📥 Descargar Reporte en Excel",
-            data=buffer.getvalue(),
+            data=_reporte_excel(
+                df_base.to_json(orient="split", date_format="iso"),
+                df_agrupado.to_json(orient="split", date_format="iso"),
+            ),
             file_name=f"balance_gastos_ia_{fecha_inicio}_{fecha_fin}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
+            width="stretch",
         )
-        st.dataframe(df_exportar, use_container_width=True, hide_index=True)
+        st.dataframe(df_base, width="stretch", hide_index=True)
 
     with tab3:
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             st.write("**Gastos por Categoría Financiera:**")
-            df_cat = df_base.groupby("Categoría")["Total ($)"].sum().reset_index()
             fig_bar = px.bar(
-                df_cat,
+                gasto_por_categoria(df_base),
                 x="Categoría",
                 y="Total ($)",
                 text_auto=".2f",
@@ -168,18 +180,17 @@ def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) ->
                 color_discrete_sequence=px.colors.qualitative.Safe,
             )
             fig_bar.update_layout(showlegend=False, template="plotly_white")
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, width="stretch")
         with col_g2:
             st.write("**Participación por Proveedor:**")
-            df_prov = df_base.groupby("Proveedor")["Total ($)"].sum().reset_index()
             fig_pie = px.pie(
-                df_prov,
+                gasto_por_proveedor(df_base),
                 values="Total ($)",
                 names="Proveedor",
                 color_discrete_sequence=px.colors.qualitative.Safe,
             )
             fig_pie.update_traces(textinfo="percent+label")
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, width="stretch")
 
     if tab4:
         with tab4:
@@ -189,7 +200,7 @@ def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) ->
             )
 
             if datos_cabecera_lista:
-                df_cabecera = pd.DataFrame(datos_cabecera_lista)
+                df_cabecera = pd.DataFrame(datos_cabecera_lista, columns=COLUMNAS_CABECERA)
                 opciones_selectbox = {
                     row["id_db"]: (
                         f"{row['Comprobante']} | {row['Proveedor']} | "
@@ -209,7 +220,7 @@ def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) ->
                     "y todas sus líneas de concepto asociadas."
                 )
 
-                if st.button("🔥 Confirmar Eliminación Definitiva", use_container_width=True):
+                if st.button("🔥 Confirmar Eliminación Definitiva", width="stretch"):
                     try:
                         if delete_gasto(user_id, int(id_seleccionado)):
                             st.success(
@@ -222,10 +233,11 @@ def render_dashboard_stats(user_id: str, fecha_inicio: date, fecha_fin: date) ->
                 st.info("No hay facturas registradas disponibles para purgar.")
 
 
+
 def render_budget_alerts(user_id: str, categorias_validas: list) -> None:
     st.subheader("🚨 Control de Presupuestos Mensuales")
 
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     mes_actual_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     if mes_actual_start.month == 12:
         mes_actual_end = mes_actual_start.replace(year=mes_actual_start.year + 1, month=1)
@@ -246,19 +258,17 @@ def render_budget_alerts(user_id: str, categorias_validas: list) -> None:
             .all()
         )
 
-    if not items_query:
-        df_mes_actual = pd.DataFrame(columns=["Categoría", "Total ($)"])
-    else:
-        df_mes_actual = pd.DataFrame(
-            [
-                {
-                    "Total ($)": float(item.total_linea),
-                    "Categoría": item.categoria,
-                    "Mes": mes_actual_str,
-                }
-                for item in items_query
-            ]
-        )
+    df_mes_actual = pd.DataFrame(
+        [
+            {
+                "Total ($)": float(item.total_linea),
+                "Categoría": item.categoria,
+                "Mes": mes_actual_str,
+            }
+            for item in items_query
+        ],
+        columns=["Total ($)", "Categoría", "Mes"],
+    )
 
     topes_presupuesto = st.session_state.topes_presupuesto
 
@@ -278,7 +288,7 @@ def render_budget_alerts(user_id: str, categorias_validas: list) -> None:
 
         edited_topes_df = st.data_editor(
             df_topes_input,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "Categoría": st.column_config.TextColumn("Categoría", disabled=True),
@@ -303,25 +313,23 @@ def render_budget_alerts(user_id: str, categorias_validas: list) -> None:
         st.markdown("**Estado de Consumo por Rubro:**")
 
         if not df_mes_actual.empty:
-            df_gasto_cat = (
-                df_mes_actual.groupby("Categoría")["Total ($)"].sum().reset_index()
-            )
+            df_gasto_cat = gasto_por_categoria(df_mes_actual)
         else:
             df_gasto_cat = pd.DataFrame(columns=["Categoría", "Total ($)"])
 
         alertas_lista = []
         for categoria in categorias_validas:
-            gasto_real = float(
+            gasto_real = to_money(
                 df_gasto_cat[df_gasto_cat["Categoría"] == categoria]["Total ($)"].sum()
             )
-            tope = float(topes_presupuesto[categoria])
-            porcentaje = (gasto_real / tope * 100) if tope > 0 else 0
+            tope = to_money(topes_presupuesto[categoria])
+            porcentaje = (gasto_real / tope * 100) if tope > 0 else Decimal("0")
 
             alertas_lista.append(
                 {
                     "Categoría": categoria,
-                    "Consumido Real ($)": gasto_real,
-                    "Límite Configurado ($)": tope,
+                    "Consumido Real ($)": float(gasto_real),
+                    "Límite Configurado ($)": float(tope),
                     "Porcentaje de Uso": f"{porcentaje:.1f}%",
                     "Excedido": gasto_real > tope,
                 }
@@ -338,7 +346,7 @@ def render_budget_alerts(user_id: str, categorias_validas: list) -> None:
 
         st.dataframe(
             df_alertas_render.style.apply(estilizar_tabla_presupuesto, axis=1),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             column_config={
                 "Consumido Real ($)": st.column_config.NumberColumn(format="$%.2f"),

@@ -6,7 +6,7 @@ An application to keep track of a company's expenses. Upload a PDF invoice or a 
 
 ## Features
 
-- **Invoice reading**: the app extracts vendor, date, and items using the Groq API (vision model `qwen/qwen3.6-27b` and text model `openai/gpt-oss-120b`). If a PDF has no extractable text, it automatically falls back to vision processing.
+- **Invoice reading**: the app extracts vendor, date, and items using the Groq API (vision model `qwen/qwen3.8-27b` and text model `openai/gpt-oss-120b`). If a PDF has no extractable text, it automatically falls back to vision processing.
 - **Accounting classification**: each item is tagged with one of these 9 categories:
 
   | Category |
@@ -21,11 +21,11 @@ An application to keep track of a company's expenses. Upload a PDF invoice or a 
   | General Operating Expenses |
   | Others |
 
-  Classification runs in batches to save tokens, using `llama-3.3-70b-versatile` with forced JSON responses.
+  Classification runs in batches to save tokens, using `openai/gpt-oss-120b` with forced JSON responses.
 - **Dashboard (Streamlit + Plotly)**: monthly expense trends, expenses by category, share by vendor, quick metrics, and multi-sheet Excel export.
 - **Budget control**: monthly caps per category. If you go over the limit, the category turns red.
 - **Admin mode**: add `?admin=1` to the URL to swap AI models on the fly, delete individual invoices, and see every user's invoices.
-- **Demo data**: on first launch it seeds 4 sample invoices (AWS, Slack, Meta Ads, Dell) so you can explore the dashboard without uploading anything.
+- **Demo data**: on first launch it seeds 7 sample invoices (AWS, Slack, Meta Ads, Dell, consulting, travel, and education) with dates spread across several months, so you can explore the dashboard without uploading anything. Demo rows do not count against the real invoice limit.
 
 ---
 
@@ -106,7 +106,7 @@ It uses SQLite by default. If you want PostgreSQL, set `DATABASE_URL` in your `.
 The relational model has three tables:
 
 - **DBPresupuestoTope**: monthly limits per category.
-- **DBGasto**: invoice header (vendor, date, total, status).
+- **DBGasto**: invoice header (vendor, date, total, voucher number, demo flag).
 - **DBGastoItem**: line items for each invoice (description, quantity, price, category).
 
 ```
@@ -125,16 +125,17 @@ Money is stored as `Numeric(15,2)` and all math runs on `Decimal` (`ROUND_HALF_U
 4. **You review and confirm** before saving.
 5. **It gets saved** to the database and the charts update instantly.
 6. **The system checks** budget caps and alerts you if needed.
-7. If you accept the invoice, **it locks** (can't be edited or deleted).
+7. **It is recorded** in the balance as history. The admin can delete invoices from the dashboard.
 
 ---
 
 ## Technical notes
 
 - **Financial precision**: everything uses `Decimal` instead of `float` so rounding errors don't pile up.
-- **Accounting immutability**: once an invoice is marked "Accepted", it can't be modified or deleted; the audit trail stays intact.
+- **Traceability**: every saved invoice keeps its voucher number, date, and line-item detail in the database.
 - **Duplicate protection**: every file is hashed with SHA-256; re-uploading the same invoice is caught automatically.
-- **API cost control**: per-user invoice limit (default 5). Admin mode has no limit.
+- **API cost control**: per-user invoice limit (default 5, configurable via `MAX_INVOICES_PER_USER`). Admin mode has no limit and demo rows do not use up quota.
+- **File validation**: PDF, PNG, JPG, and JPEG up to 10 MB are accepted; PDFs over 25 pages are rejected before spending tokens.
 - **Per-user isolation**: each browser session gets a unique ID (`?uid=...`) and data is scoped per user.
 - **SQLite in dev, PostgreSQL in prod**: the system picks the database based on the config.
 
@@ -143,10 +144,12 @@ Money is stored as `Numeric(15,2)` and all math runs on `Decimal` (`ROUND_HALF_U
 ## Tests
 
 ```bash
-docker compose exec app pytest tests/unit -v
+.venv\Scripts\python.exe -m pytest tests -q     # Windows
+python -m pytest tests -q                       # Linux/macOS
+docker compose exec app pytest tests/unit -v    # inside Docker
 ```
 
-Tests cover consolidation and financial precision, ORM models, data extraction and sanitization, category classification, and the shared utilities.
+Tests cover financial precision and rounding, expense consolidation, ORM models and schema migration, data extraction and sanitization, category classification, demo seeding, the invoice limit, and voucher-number uniqueness.
 
 ---
 

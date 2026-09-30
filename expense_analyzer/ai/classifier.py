@@ -2,14 +2,14 @@ import json
 from groq import Groq
 from dotenv import load_dotenv
 from typing import List
-from expense_analyzer.ai._common import get_groq_key
+from expense_analyzer.ai._common import MODELO_CLASIFICACION_POR_DEFECTO, get_groq_key
 
 load_dotenv()
 
 class ExpenseClassifier:    
     def __init__(self, model: str = None):
         self.client = Groq(api_key=get_groq_key())
-        self.model = model or "openai/gpt-oss-120b"
+        self.model = model or MODELO_CLASIFICACION_POR_DEFECTO
         self.categorias_validas = [
             "Infraestructura Cloud & Hosting", 
             "Herramientas SaaS & Software",

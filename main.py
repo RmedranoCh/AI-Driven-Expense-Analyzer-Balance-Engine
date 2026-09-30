@@ -1,9 +1,11 @@
-from expense_analyzer.ai.extractor import InvoiceExtractor
+from datetime import date
+
 from expense_analyzer.ai.classifier import ExpenseClassifier
+from expense_analyzer.ai.extractor import InvoiceExtractor
+from expense_analyzer.database.models import DBGasto
 from expense_analyzer.database.session import get_session, initialize_database
-from expense_analyzer.database.models import DBGasto, DBGastoItem
-from decimal import Decimal
-from datetime import datetime, timezone
+from expense_analyzer.dashboard.services import save_approved_invoice
+from expense_analyzer.money import to_money
 
 initialize_database()
 
@@ -16,42 +18,36 @@ def process_external_invoice(text: str, user_id: str = "cli_default"):
     descripciones = [item["descripcion"] for item in data["items"]]
     categorias = classifier.classify_batch(descripciones)
 
-    total_gasto = Decimal("0.00")
-    db_items = []
+    items = [
+        {
+            "descripcion": item["descripcion"],
+            "cantidad": item["cantidad"],
+            "precio_unitario": item["precio_unitario"],
+            "categoria": categorias[idx] if idx < len(categorias) else "Otros",
+        }
+        for idx, item in enumerate(data["items"])
+    ]
 
-    for idx, item in enumerate(data["items"]):
-        total_linea = Decimal(str(item["cantidad"])) * Decimal(str(item["precio_unitario"]))
-        total_gasto += total_linea
+    if not items:
+        print("? No se detectaron items en el texto, nada que registrar.")
+        return
 
-        db_items.append(
-            DBGastoItem(
-                descripcion=item["descripcion"],
-                cantidad=Decimal(str(item["cantidad"])),
-                precio_unitario=Decimal(str(item["precio_unitario"])),
-                total_linea=total_linea,
-                categoria=categorias[idx] if idx < len(categorias) else "Otros",
-            )
-        )
+    total_gasto = to_money(sum(to_money(i["cantidad"]) * to_money(i["precio_unitario"]) for i in items))
+
+    numero = save_approved_invoice(
+        user_id=user_id,
+        proveedor=data["proveedor"],
+        fecha=date.today(),
+        items_finales=items,
+        total_recalculado=total_gasto,
+    )
 
     with get_session() as db:
-        try:
-            db_gasto = DBGasto(
-                user_id=user_id,
-                numero_comprobante=f"EXP-{int(datetime.now(timezone.utc).timestamp())}",
-                proveedor=data["proveedor"],
-                fecha=datetime.now(timezone.utc),
-                total_gasto=total_gasto,
-            )
-            for db_item in db_items:
-                db_item.gasto = db_gasto
-                db_gasto.items.append(db_item)
+        db_gasto = db.query(DBGasto).filter_by(numero_comprobante=numero).first()
+        lineas = db_gasto.items if db_gasto else []
 
-            db.add(db_gasto)
-            db.commit()
-            print(f"✅ Balance registrado con éxito para: {data['proveedor']}")
-        except Exception as e:
-            db.rollback()
-            print(f"❌ Error al guardar balance: {e}")
+    print(f"? Balance registrado con exito para: {data['proveedor']} ({numero})")
+    print(f"  Total: ${total_gasto:,.2f} | Lineas: {len(lineas)}")
 
 
 if __name__ == "__main__":

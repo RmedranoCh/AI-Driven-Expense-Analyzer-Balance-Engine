@@ -4,7 +4,7 @@ import logging
 import threading
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import Boolean, Integer, Numeric, create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.pool import QueuePool, StaticPool
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
@@ -204,6 +204,40 @@ def reset_database_cache() -> None:
         _schema_ready = False
 
 
+def _default_para(columna) -> str:
+    if isinstance(columna.type, Boolean):
+        return "false"
+    if isinstance(columna.type, (Numeric, Integer)):
+        return "0"
+    return "''"
+
+
+def _add_missing_columns(engine) -> None:
+    inspector = inspect(engine)
+    dialect = engine.dialect
+    for tabla in Base.metadata.sorted_tables:
+        if not inspector.has_table(tabla.name):
+            continue
+        existentes = {col["name"] for col in inspector.get_columns(tabla.name)}
+        for columna in tabla.columns:
+            if columna.name in existentes:
+                continue
+            partes = [
+                f'ALTER TABLE "{tabla.name}" ADD COLUMN "{columna.name}" '
+                f"{columna.type.compile(dialect=dialect)}"
+            ]
+            if not columna.nullable:
+                partes.append(f"DEFAULT {_default_para(columna)} NOT NULL")
+            elif columna.server_default is None and isinstance(
+                columna.type, (Boolean, Numeric)
+            ):
+                partes.append(f"DEFAULT {_default_para(columna)}")
+            sentencia = " ".join(partes)
+            logger.info("Migracion de esquema: %s", sentencia)
+            with engine.begin() as conn:
+                conn.execute(text(sentencia))
+
+
 def initialize_database() -> None:
     global _schema_ready
     if _schema_ready:
@@ -222,6 +256,7 @@ def initialize_database() -> None:
         for attempt in range(1, DDL_ATTEMPTS + 1):
             try:
                 Base.metadata.create_all(bind=engine, checkfirst=True)
+                _add_missing_columns(engine)
                 _schema_ready = True
                 return
             except OperationalError as exc:

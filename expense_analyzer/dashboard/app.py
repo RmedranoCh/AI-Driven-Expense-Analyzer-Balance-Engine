@@ -4,8 +4,14 @@ import secrets as _secrets
 import streamlit as st
 import pandas as pd
 import pypdf
-from datetime import datetime, timezone, date
+from datetime import datetime, date
+from sqlalchemy.exc import IntegrityError
 
+from expense_analyzer.ai._common import (
+    MODELO_CLASIFICACION_POR_DEFECTO,
+    MODELO_TEXTO_POR_DEFECTO,
+    MODELO_VISION_POR_DEFECTO,
+)
 from expense_analyzer.dashboard import services
 from expense_analyzer.dashboard import views
 from expense_analyzer.dashboard import styles
@@ -17,12 +23,50 @@ from expense_analyzer.dashboard.services import (
     initialize_database,
     get_user_id,
     count_user_invoices,
+    get_ai_models,
     get_ai_tools,
     seed_demo_data,
     build_pending_payload,
     save_approved_invoice,
 )
 from expense_analyzer.database.session import DatabaseUnavailableError
+from expense_analyzer.money import line_total, to_money
+
+MAX_UPLOAD_MB = 10
+MAX_PDF_PAGES = 25
+EXTENSIONES_ACEPTADAS = ["pdf", "png", "jpg", "jpeg"]
+
+
+class ArchivoInvalido(Exception):
+    pass
+
+
+def validar_archivo(archivo) -> None:
+    nombre = getattr(archivo, "name", "archivo")
+    if len(archivo.getvalue()) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise ArchivoInvalido(
+            f"'{nombre}' supera el limite de {MAX_UPLOAD_MB} MB. "
+            "Divide el comprobante o reduce la resolucion."
+        )
+    if getattr(archivo, "type", "") == "application/pdf":
+        try:
+            paginas = len(pypdf.PdfReader(archivo).pages)
+        except Exception as exc:
+            raise ArchivoInvalido(f"No se pudo leer el PDF '{nombre}': {exc}")
+        if paginas > MAX_PDF_PAGES:
+            raise ArchivoInvalido(
+                f"'{nombre}' tiene {paginas} paginas y el limite es {MAX_PDF_PAGES}."
+            )
+
+
+def extraer_texto_pdf(archivo, max_paginas: int = MAX_PDF_PAGES) -> str:
+    reader = pypdf.PdfReader(archivo)
+    textos = []
+    for pagina in reader.pages[:max_paginas]:
+        texto = pagina.extract_text()
+        if texto:
+            textos.append(texto)
+    return "\n".join(textos)
 
 
 class ExpenseDashboard:
@@ -49,9 +93,8 @@ class ExpenseDashboard:
         st.title("Analizador Inteligente de Gastos y Balances")
 
         invoices_used = count_user_invoices(self.user_id)
-        if invoices_used == 0:
+        if count_user_invoices(self.user_id, include_demo=True) == 0:
             seed_demo_data(self.user_id)
-            invoices_used = count_user_invoices(self.user_id)
             st.rerun()
 
         max_invoices = get_max_invoices_per_user()
@@ -64,12 +107,16 @@ class ExpenseDashboard:
             st.sidebar.caption(
                 f"⚠️ Límite: {remaining} factura(s) restante(s) para proteger la API de IA."
             )
+            st.sidebar.caption(
+                f"📄 PDF de hasta {MAX_UPLOAD_MB} MB y {MAX_PDF_PAGES} páginas, o imagen JPG/PNG. "
+                "Los datos de ejemplo no cuentan para este límite."
+            )
 
         processing = st.session_state.get("processing", False)
 
         uploaded_file = st.sidebar.file_uploader(
             "Subir Factura Externa (PDF o Imagen)",
-            type=["pdf", "png", "jpg", "jpeg"],
+            type=EXTENSIONES_ACEPTADAS,
             disabled=(not is_admin and remaining <= 0) or processing,
             key="file_uploader",
         )
@@ -90,7 +137,7 @@ class ExpenseDashboard:
 
         with st.sidebar.expander("🔁 Restablecer datos demo", expanded=False):
             st.caption("Limpia todos los datos y carga ejemplos predefinidos.")
-            if st.button("📦 Cargar datos demo", use_container_width=True):
+            if st.button("📦 Cargar datos demo", width="stretch"):
                 seed_demo_data(self.user_id)
                 st.session_state.processed_hashes = set()
                 st.rerun()
@@ -130,25 +177,26 @@ class ExpenseDashboard:
                 st.caption("Solo visible para administradores")
                 vision_model = st.text_input(
                     "Modelo de Visión",
-                    value=st.session_state.get("vision_model", "qwen/qwen3.6-27b"),
+                    value=st.session_state.get("vision_model", MODELO_VISION_POR_DEFECTO),
                     key="admin_vision",
                 )
                 text_model = st.text_input(
                     "Modelo de Texto",
-                    value=st.session_state.get("text_model", "openai/gpt-oss-120b"),
+                    value=st.session_state.get("text_model", MODELO_TEXTO_POR_DEFECTO),
                     key="admin_text",
                 )
                 classifier_model = st.text_input(
                     "Modelo de Clasificación",
-                    value=st.session_state.get("classifier_model", "openai/gpt-oss-120b"),
+                    value=st.session_state.get(
+                        "classifier_model", MODELO_CLASIFICACION_POR_DEFECTO
+                    ),
                     key="admin_classifier",
                 )
                 if st.button("Aplicar modelos", key="admin_apply", type="primary"):
                     st.session_state["vision_model"] = vision_model
                     st.session_state["text_model"] = text_model
                     st.session_state["classifier_model"] = classifier_model
-                    st.cache_resource.clear()
-                    st.success("Modelos actualizados. Recarga la página para aplicar cambios.")
+                    st.success("Modelos actualizados. Recarga la pagina para aplicar cambios.")
 
         if st.session_state.get("processing"):
             st.markdown(
@@ -179,6 +227,12 @@ class ExpenseDashboard:
             st.error(f"Límite de {max_invoices} facturas alcanzado.")
             return
 
+        try:
+            validar_archivo(file)
+        except ArchivoInvalido as exc:
+            st.error(f"⚠️ {exc}")
+            return
+
         file_bytes = file.getvalue()
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         if file_hash in st.session_state.processed_hashes:
@@ -206,34 +260,49 @@ class ExpenseDashboard:
 
         status = st.status("Iniciando análisis del documento...", expanded=True)
         try:
-            status.update(label="📄 Leyendo contenido del archivo...")
             if file.type == "application/pdf":
-                reader = pypdf.PdfReader(file)
-                text = "\n".join(
-                    [page.extract_text() for page in reader.pages if page.extract_text()]
-                )
-                if text.strip():
-                    status.update(label="🤖 Enviando texto a IA para extraer datos...")
-                    raw_data = self.extractor.extract_from_text(text)
+                status.update(label="Leyendo contenido del archivo...")
+                texto = extraer_texto_pdf(file)
+                if texto.strip():
+                    status.update(label="Enviando texto a IA para extraer datos...")
+                    raw_data = self.extractor.extract_from_text(texto)
                 else:
-                    status.update(label="🖼️ Procesando imagen del PDF con IA de visión...")
-                    raw_data = self.extractor.extract_from_image(file.getvalue(), "image/jpeg")
+                    status.update(
+                        label="PDF sin capa de texto, usando IA de visión..."
+                    )
+                    raw_data = self.extractor.extract_from_image(
+                        file_bytes, "image/jpeg"
+                    )
             else:
-                status.update(label="🖼️ Analizando imagen con IA de visión...")
-                raw_data = self.extractor.extract_from_image(file.getvalue(), file.type)
+                status.update(label="Analizando imagen con IA de visión...")
+                raw_data = self.extractor.extract_from_image(file_bytes, file.type)
 
-            status.update(label="🏷️ Clasificando conceptos con IA...")
+            if not raw_data.get("items"):
+                st.session_state.processed_hashes.discard(file_hash)
+                status.update(label="No se detectaron items en la factura", state="error")
+                st.error(
+                    "La IA no encontro conceptos en el documento. "
+                    "Prueba con una imagen mas nitida o con el PDF original."
+                )
+                return
+
+            status.update(label="Clasificando conceptos con IA...")
             descripciones = [item["descripcion"] for item in raw_data["items"]]
             categorias_ia = self.classifier.classify_batch(descripciones)
 
-            status.update(label="📊 Preparando datos para revisión...")
+            status.update(label="Preparando datos para revisión...")
             pending = build_pending_payload(raw_data, categorias_ia)
             pending["_file_hash"] = file_hash
             st.session_state.pending_gasto = pending
-            status.update(label="✅ Análisis completado con éxito", state="complete")
+            status.update(label="Análisis completado con éxito", state="complete")
             st.rerun()
+        except ArchivoInvalido as exc:
+            st.session_state.processed_hashes.discard(file_hash)
+            status.update(label="Archivo rechazado", state="error")
+            st.error(f"⚠️ {exc}")
         except Exception as e:
-            status.update(label="❌ Error en el procesamiento", state="error")
+            st.session_state.processed_hashes.discard(file_hash)
+            status.update(label="Error en el procesamiento", state="error")
             st.error(f"Error crítico de procesamiento: {e}")
 
     def _render_confirmation_step(self):
@@ -255,7 +324,7 @@ class ExpenseDashboard:
 
         edited_df = st.data_editor(
             pd.DataFrame(data["items"]),
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "descripcion": st.column_config.TextColumn("Concepto/Descripción", required=True),
                 "cantidad": st.column_config.NumberColumn("Cantidad", min_value=0.0001, required=True),
@@ -267,11 +336,13 @@ class ExpenseDashboard:
             },
         )
 
-        total_recalculado = sum(
-            float(row["cantidad"]) * float(row["precio_unitario"])
-            for _, row in edited_df.iterrows()
+        total_recalculado = to_money(
+            sum(
+                line_total(row["cantidad"], row["precio_unitario"])
+                for _, row in edited_df.iterrows()
+            )
         )
-        total_original = data["total_ia"]
+        total_original = to_money(data["total_ia"])
 
         st.markdown("---")
         col_m1, col_m2 = st.columns(2)
@@ -305,7 +376,10 @@ class ExpenseDashboard:
                 }
                 for _, row in df_final.iterrows()
             ]
-            save_approved_invoice(
+            if not items_finales:
+                st.error("No se puede guardar una factura sin items.")
+                return
+            numero = save_approved_invoice(
                 user_id=self.user_id,
                 proveedor=proveedor,
                 fecha=fecha,
@@ -313,9 +387,16 @@ class ExpenseDashboard:
                 total_recalculado=total_recalculado,
                 file_hash=file_hash,
             )
-            st.success("¡Gasto integrado al balance con éxito!")
+            st.success(f"¡Gasto integrado al balance con éxito! Comprobante {numero}")
             del st.session_state.pending_gasto
             st.rerun()
+        except ValueError as e:
+            st.error(str(e))
+        except IntegrityError:
+            st.error(
+                "No se pudo guardar: el comprobante ya existe. "
+                "Vuelve a intentar, se generara un numero nuevo."
+            )
         except Exception as e:
             st.error(f"Error al guardar: {e}")
 
@@ -337,7 +418,7 @@ class ExpenseDashboard:
 
         with st.sidebar.expander("🔐 Modo Admin", expanded=True):
             pwd = st.text_input("Contraseña de admin", type="password", key="admin_login_pwd")
-            clicked = st.button("Ingresar", key="admin_login_btn", type="primary", use_container_width=True)
+            clicked = st.button("Ingresar", key="admin_login_btn", type="primary", width="stretch")
             if clicked:
                 pepper = get_admin_pepper()
                 pwd_hash = hashlib.pbkdf2_hmac('sha256', pwd.encode(), pepper.encode(), 100000).hex()
